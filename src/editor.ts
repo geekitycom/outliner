@@ -10,7 +10,6 @@ import {
   closestNode,
   directChild,
   getNodeAttributes,
-  htmlToElement,
   iconOf,
   nodeParents,
   setNodeAttributes,
@@ -288,7 +287,7 @@ export class Editor {
     const wrapper = document.createElement('div')
     wrapper.className = 'concord-wrapper type-icon'
 
-    let nodeIcon = attributes['icon'] || attributes['type']
+    const nodeIcon = attributes['icon'] || attributes['type']
     let iconName = 'caret-right'
     const prefs = this.o.prefs()
     if (nodeIcon) {

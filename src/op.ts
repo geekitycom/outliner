@@ -16,7 +16,7 @@ import {
   textOf,
 } from './dom'
 
-let scrollEnabled = true
+const scrollEnabled = true
 const pixelsAboveOutlineArea = 0
 
 function firstNodeParent(el: Element): HTMLLIElement | null {

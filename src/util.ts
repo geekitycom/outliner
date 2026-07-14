@@ -9,7 +9,7 @@ const XML_CHAR_MAP: Record<string, string> = {
 
 export function escapeXml(input: unknown): string {
   let s = String(input)
-  s = s.replace(/ /g, ' ')
+  s = s.replace(/\u00A0/g, ' ')
   return s.replace(/[<>&"]/g, (ch) => XML_CHAR_MAP[ch])
 }
 
