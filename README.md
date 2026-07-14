@@ -161,9 +161,9 @@ insert/insertText/insertImage, bold/italic/strikethrough/link, comments,
 render-mode toggle, undo, cut/copy/paste, OPML import/export, attributes, headers,
 title, `visitAll`/`visitToSummit`, and remote `open`/`save` (now `fetch`-based).
 
-## Upgrading from old Concord (`src/utils.ts`)
+## Upgrading from old Concord (`src/compat.ts`)
 
-`src/utils.ts` is an **optional** compatibility layer — the modern equivalent of
+`src/compat.ts` is an **optional** compatibility layer — the modern equivalent of
 `concordutils.js`, minus the jQuery. Old Concord apps drove a single `#outliner`
 through global `op*` functions (`opExpand()`, `opReorg(dir, count)`,
 `opOutlineToXml()`, …). Register your instance once and those same calls keep
@@ -171,7 +171,7 @@ working, each translated to the new `Outliner` API:
 
 ```ts
 import { createOutliner } from './src'
-import { setDefaultOutliner, opXmlToOutline, opExpand, opReorg, initialOpmltext } from './src/utils'
+import { setDefaultOutliner, opXmlToOutline, opExpand, opReorg, initialOpmltext } from './src/compat'
 
 const outliner = createOutliner(document.getElementById('outliner')!)
 setDefaultOutliner(outliner)

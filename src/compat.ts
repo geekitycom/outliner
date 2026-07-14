@@ -6,7 +6,7 @@
 // the new Outliner API.
 //
 //   import { createOutliner } from './index'
-//   import { setDefaultOutliner, opExpand, opReorg, initialOpmltext } from './utils'
+//   import { setDefaultOutliner, opExpand, opReorg, initialOpmltext } from './compat'
 //
 //   const outliner = createOutliner(document.getElementById('outliner')!)
 //   setDefaultOutliner(outliner)

@@ -17,7 +17,7 @@
 //
 // Unlike the clean `outliner.global.js` (which only defines `window.Outliner`),
 // this one deliberately pollutes the global scope, matching concordutils.js.
-import * as compat from './utils'
+import * as compat from './compat'
 
 // Also define the namespaced `window.Outliner` (the IIFE `name`), same as the
 // standard global build.
