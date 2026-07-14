@@ -54,6 +54,7 @@ const outliner = createOutliner(container, {
   },
   callbacks: {
     insert: (node: NodeRefApi) => node.attributes.set('created', new Date().toUTCString()),
+    cursorMoved: () => render(),
   },
 })
 
@@ -110,6 +111,15 @@ for (const cmd of commands) {
 }
 
 function render() {
-  status.textContent = `title: ${outliner.getTitle()} · cursor: ${outliner.getLineText() ?? ''}`
+  const line = outliner.getLineText()
+  let attrs = ''
+  if (line !== null) {
+    attrs = Object.entries(outliner.cursor.attributes.getAll())
+      .map(([k, v]) => `${k}="${v}"`)
+      .join(' ')
+  }
+  status.textContent =
+    `title: ${outliner.getTitle()} · cursor: ${line ?? '(none)'}` +
+    (attrs ? ` · ${attrs}` : '')
 }
 render()
