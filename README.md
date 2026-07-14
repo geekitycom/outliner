@@ -1,10 +1,15 @@
 # Outliner
 
-A **TypeScript port of [Concord](https://github.com/scripting/concord)** — Dave Winer /
-Small Picture's keyboard-driven JavaScript outliner (the editor at the core of Little
-Outliner and Fargo). Its native file format is [OPML](http://opml.org/).
+A **TypeScript port of [Concord](https://github.com/scripting/concord)** — a keyboard-driven
+outliner (the editor at the core of Little Outliner and Fargo) whose native file format is
+[OPML](http://opml.org/).
 
-This port keeps Concord's behavior but replaces its dependencies:
+> Concord is a JavaScript outliner written by Kyle Shank in 2013, maintained by Dave Winer
+> since, GPL-licensed.
+
+All credit for the original outliner goes to Kyle Shank and Dave Winer; this project is a
+dependency-modernizing port of their work. This port keeps Concord's behavior but replaces
+its dependencies:
 
 | Original | Outliner |
 | --- | --- |
@@ -20,10 +25,69 @@ GPL-3.0, same as the upstream project. See `LICENSE.txt`.
 
 ```bash
 npm install
-npm run dev        # demo at http://localhost:5174
-npm run build      # type-check + production bundle
+npm run dev        # demo dev server at http://localhost:5174
+npm run build      # build the library into dist/ (ESM + global + types + css)
+npm run preview    # build the demo and serve it over http
 npm run typecheck  # tsc --noEmit
 ```
+
+## Distribution
+
+`npm run build` produces a library in `dist/`, in two formats plus types and CSS:
+
+| File | Format | Use |
+| --- | --- | --- |
+| `dist/outliner.js` | **ESM** (the default) | `import` from bundlers / modern apps |
+| `dist/outliner.global.js` | **IIFE global** | plain `<script>` drop-in — exposes `window.Outliner` |
+| `dist/outliner.compat.global.js` | **IIFE, legacy globals** | migrating an old Concord app — see below |
+| `dist/outliner.css` | stylesheet | `<link>` it alongside either build |
+| `dist/*.d.ts` | TypeScript types | editor/tooling support |
+
+ESM is the modern default (`import { createOutliner } from '@local/outliner'`). The
+global build is the opt-in, no-build-tool option — the way classic Concord was
+included on a page. It exposes a single namespaced global rather than dozens of
+loose functions:
+
+```html
+<link rel="stylesheet" href="outliner.css" />
+<script src="outliner.global.js"></script>
+<div id="outliner"></div>
+<script>
+  const o = Outliner.createOutliner(document.getElementById('outliner'), {
+    prefs: { typeIcons: Outliner.appTypeIcons },
+  })
+  o.loadOpml(Outliner.EMPTY_OPML)
+  o.expand()
+</script>
+```
+
+(Everything exported from `src/index.ts` — `createOutliner`, the `Outliner` class,
+`EMPTY_OPML`, the direction constants, `appTypeIcons`, etc. — is a property of the
+`Outliner` global.)
+
+### Migrating an old Concord app
+
+`dist/outliner.compat.global.js` is the maximum-compatibility drop-in: it defines
+`window.Outliner` *and* reproduces the classic `concordutils.js` global surface —
+the bare `op*` functions, the `up`/`down`/`left`/`right` direction globals,
+`initialOpmltext`, `appTypeIcons`, and the string helpers — so code written against
+old Concord keeps working. Register your instance once, then call the old functions:
+
+```html
+<link rel="stylesheet" href="outliner.css" />
+<script src="outliner.compat.global.js"></script>
+<div id="outliner"></div>
+<script>
+  const o = Outliner.createOutliner(document.getElementById('outliner'))
+  setDefaultOutliner(o)          // the op* helpers act on this instance
+  opXmlToOutline(initialOpmltext)
+  opExpand()                     // exactly as the old app called it
+</script>
+```
+
+The only change from a classic Concord page is registering the instance with
+`setDefaultOutliner(o)` in place of the old jQuery `$("#outliner").concord(...)`.
+Use the plain `outliner.global.js` instead if you don't need the loose globals.
 
 ## Using the library
 

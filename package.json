@@ -5,10 +5,28 @@
   "type": "module",
   "license": "GPL-3.0-or-later",
   "description": "TypeScript port of Concord, Dave Winer / Small Picture's JavaScript outliner. Rewritten with no jQuery, no Bootstrap, and inline SVG icons instead of Font Awesome. GPL-3.0; derived from https://github.com/scripting/concord.",
+  "main": "./dist/outliner.js",
+  "module": "./dist/outliner.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/outliner.global.js",
+  "jsdelivr": "./dist/outliner.global.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/outliner.js"
+    },
+    "./global": "./dist/outliner.global.js",
+    "./compat-global": "./dist/outliner.compat.global.js",
+    "./styles.css": "./dist/outliner.css"
+  },
+  "files": ["dist"],
+  "sideEffects": ["**/*.css"],
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview",
+    "build": "npm run build:lib",
+    "build:lib": "vite build -c vite.lib.config.ts && vite build -c vite.compat.config.ts && tsc -p tsconfig.build.json",
+    "build:demo": "vite build --outDir dist-demo",
+    "preview": "npm run build:demo && vite preview --outDir dist-demo",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
