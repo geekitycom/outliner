@@ -3,7 +3,7 @@
   "packages": {
     ".": {
       "release-type": "node",
-      "package-name": "@local/outliner",
+      "package-name": "@andrewshell/outliner",
       "include-component-in-tag": false,
       "extra-files": [
         {

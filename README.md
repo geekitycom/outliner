@@ -43,14 +43,32 @@ npm run typecheck  # tsc --noEmit
 | `dist/outliner.css` | stylesheet | `<link>` it alongside either build |
 | `dist/*.d.ts` | TypeScript types | editor/tooling support |
 
-ESM is the modern default (`import { createOutliner } from '@local/outliner'`). The
-global build is the opt-in, no-build-tool option — the way classic Concord was
-included on a page. It exposes a single namespaced global rather than dozens of
-loose functions:
+### Install
+
+```bash
+npm install @andrewshell/outliner
+```
+
+```ts
+import { createOutliner } from '@andrewshell/outliner'
+import '@andrewshell/outliner/styles.css'
+```
+
+Published to npm, so it's also on the CDNs that mirror npm — no build step:
+
+```
+https://cdn.jsdelivr.net/npm/@andrewshell/outliner/dist/outliner.global.js
+https://unpkg.com/@andrewshell/outliner/dist/outliner.global.js
+https://esm.sh/@andrewshell/outliner                                  # ESM in the browser
+```
+
+ESM is the modern default. The global build is the opt-in, no-build-tool option —
+the way classic Concord was included on a page. It exposes a single namespaced
+global rather than dozens of loose functions:
 
 ```html
-<link rel="stylesheet" href="outliner.css" />
-<script src="outliner.global.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@andrewshell/outliner/dist/outliner.css" />
+<script src="https://cdn.jsdelivr.net/npm/@andrewshell/outliner/dist/outliner.global.js"></script>
 <div id="outliner"></div>
 <script>
   const o = Outliner.createOutliner(document.getElementById('outliner'), {
