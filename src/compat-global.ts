@@ -27,3 +27,7 @@ const g = globalThis as unknown as Record<string, unknown>
 for (const [key, value] of Object.entries(compat)) {
   g[key] = value
 }
+
+// If jQuery is already loaded, register the classic $(el).concord(options)
+// plugin so old apps create the outliner exactly as before.
+compat.installConcordJQueryPlugin()

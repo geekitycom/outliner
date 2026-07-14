@@ -129,4 +129,34 @@ export class NodeAttributes implements NodeAttributesApi {
     if (had) this.o.op.markChanged()
     return had
   }
+
+  // --- legacy aliases (classic Concord ConcordOpAttributes names) -----------
+  /** @deprecated use {@link get} */
+  getOne(name: string): string | undefined {
+    return this.get(name)
+  }
+  /** @deprecated use {@link set} */
+  setOne(name: string, value: string): boolean {
+    return this.set(name, value)
+  }
+  /** @deprecated use {@link setAll} */
+  setGroup(attributes: OpmlAttributes): OpmlAttributes {
+    return this.setAll(attributes)
+  }
+  /** @deprecated use {@link add} */
+  addGroup(attributes: OpmlAttributes): OpmlAttributes {
+    return this.add(attributes)
+  }
+  /** @deprecated use {@link clear} */
+  makeEmpty(): boolean {
+    return this.clear()
+  }
+  /** @deprecated use {@link has} */
+  exists(name: string): boolean {
+    return this.has(name)
+  }
+  /** @deprecated use {@link remove} */
+  removeOne(name: string): boolean {
+    return this.remove(name)
+  }
 }

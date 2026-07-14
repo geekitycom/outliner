@@ -117,4 +117,9 @@ export class NodeRef implements NodeRefApi {
     this.o.op.markChanged()
     return true
   }
+
+  /** @deprecated use {@link insertOpml} */
+  insertXml(opml: string, dir?: Direction): boolean {
+    return this.insertOpml(opml, dir)
+  }
 }

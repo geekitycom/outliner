@@ -13,14 +13,23 @@
 //   opXmlToOutline(initialOpmltext)
 //   opExpand(); opReorg('right', 1)   // exactly as the old app called them
 
-import type { Direction, NodeRef, OpmlAttributes } from './types'
-import type { Outliner } from './outliner'
+import type {
+  Direction,
+  NodeRef,
+  OpmlAttributes,
+  OutlinerCallbacks,
+  OutlinerOptions,
+} from './types'
+import { Outliner } from './outliner'
 import { EMPTY_OPML } from './constants'
 
 export { appTypeIcons } from './icons'
 
 /** The original name for the empty-outline OPML string. */
 export const initialOpmltext = EMPTY_OPML
+
+/** The default outliner selector, as in the original concordutils.js. */
+export const defaultUtilsOutliner = '#outliner'
 
 // Direction globals matched the old `var up = "up"` etc. so call sites read the
 // same. (The core module exports the UPPERCASE variants.)
@@ -33,20 +42,110 @@ export const flatdown: Direction = 'flatdown'
 
 // --- default outliner registration ------------------------------------------
 
+const instances = new WeakMap<HTMLElement, Outliner>()
 let defaultOutliner: Outliner | null = null
+let defaultSelector = '#outliner' // matches concordutils' defaultUtilsOutliner
+
+// Old Concord callback names -> the modern ones the Outliner fires.
+const LEGACY_CALLBACKS: Record<string, keyof OutlinerCallbacks> = {
+  opInsert: 'insert',
+  opCursorMoved: 'cursorMoved',
+  opExpand: 'expand',
+  opCollapse: 'collapse',
+  opReorg: 'reorg',
+  opHover: 'hover',
+  opContextMenu: 'contextMenu',
+  opKeystroke: 'keystroke',
+}
+
+function translateOptions(options?: OutlinerOptions): OutlinerOptions | undefined {
+  if (!options?.callbacks) return options
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(options.callbacks)) {
+    out[LEGACY_CALLBACKS[key] ?? key] = value
+  }
+  return { ...options, callbacks: out as OutlinerCallbacks }
+}
+
+/** Get (or create) the outliner bound to a container element. */
+export function getOrCreateOutliner(
+  el: HTMLElement,
+  options?: OutlinerOptions,
+): Outliner {
+  let o = instances.get(el)
+  if (!o) {
+    o = new Outliner(el, translateOptions(options))
+    instances.set(el, o)
+  } else if (options) {
+    const t = translateOptions(options)!
+    if (t.prefs) o.prefs(t.prefs)
+    if (t.callbacks) o.setCallbacks(t.callbacks)
+  }
+  return o
+}
 
 /** Register the instance the op* helpers act on (the old `defaultUtilsOutliner`). */
 export function setDefaultOutliner(outliner: Outliner): void {
   defaultOutliner = outliner
+  instances.set(outliner.container, outliner)
 }
 
+/** Change the selector the op* helpers fall back to (default `#outliner`). */
+export function setDefaultOutlinerSelector(selector: string): void {
+  defaultSelector = selector
+}
+
+/**
+ * The instance the op* helpers act on. Like the original concordutils, if none
+ * has been registered it resolves (creating if needed) the element matching the
+ * default selector (`#outliner`), so `op*` calls work before an explicit create.
+ */
 export function getDefaultOutliner(): Outliner {
-  if (!defaultOutliner) {
-    throw new Error(
-      'outliner/utils: no default outliner. Call setDefaultOutliner(outliner) first.',
-    )
+  if (defaultOutliner) return defaultOutliner
+  const el =
+    typeof document !== 'undefined' ? document.querySelector(defaultSelector) : null
+  if (el instanceof HTMLElement) {
+    defaultOutliner = getOrCreateOutliner(el)
+    return defaultOutliner
   }
-  return defaultOutliner
+  throw new Error(
+    `outliner/utils: no default outliner and nothing matches "${defaultSelector}". ` +
+      'Call setDefaultOutliner(outliner) first.',
+  )
+}
+
+// --- classic jQuery plugin shim ---------------------------------------------
+
+interface JQueryLike {
+  0?: HTMLElement
+}
+interface JQueryStatic {
+  fn: Record<string, unknown>
+}
+
+/**
+ * If jQuery is present, register the classic `$(selector).concord(options)`
+ * plugin, so an old Concord app can create the outliner exactly as before
+ * (it returns the Outliner instance, which exposes `.op` / `.editor` / `.script`).
+ * Legacy `opInsert`/`opExpand`/… callback names are translated automatically.
+ * The created instance becomes the default for the op* helpers. Returns whether
+ * it installed.
+ */
+export function installConcordJQueryPlugin(): boolean {
+  const g = globalThis as unknown as { jQuery?: JQueryStatic }
+  const $ = g.jQuery
+  if (!$ || !$.fn) return false
+  $.fn.concord = function (
+    this: JQueryLike,
+    options?: OutlinerOptions,
+  ): Outliner | undefined {
+    const el = this[0]
+    if (!el) return undefined
+    const o = getOrCreateOutliner(el, options)
+    setDefaultOutliner(o)
+    return o
+  }
+  return true
 }
 
 const o = getDefaultOutliner
