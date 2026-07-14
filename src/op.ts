@@ -1,0 +1,1157 @@
+// The operations layer. Ported from Concord's ConcordOp. Every method acts on
+// the live bar cursor (`.concord-cursor`).
+import type { Outliner } from './outliner'
+import type { Direction, OpmlHeaders } from './types'
+import { UP, DOWN, LEFT, RIGHT, FLATUP, FLATDOWN } from './constants'
+import { NodeAttributes } from './attributes'
+import { NodeRef } from './noderef'
+import { escapeXml } from './util'
+import {
+  childNodes,
+  childOl,
+  getConcordRange,
+  nodeParents,
+  nextNode,
+  prevNode,
+  textOf,
+} from './dom'
+
+let scrollEnabled = true
+const pixelsAboveOutlineArea = 0
+
+function firstNodeParent(el: Element): HTMLLIElement | null {
+  return nodeParents(el)[0] ?? null
+}
+
+export class Op {
+  attributes: NodeAttributes
+
+  constructor(private o: Outliner) {
+    this.attributes = new NodeAttributes(o, () => this.getCursor())
+  }
+
+  private get root(): HTMLElement {
+    return this.o.root
+  }
+
+  // --- tree walking ---------------------------------------------------------
+
+  _walk_up(context: HTMLLIElement): HTMLLIElement | null {
+    const prev = prevNode(context)
+    if (!prev) return firstNodeParent(context)
+    return this._last_child(prev)
+  }
+
+  _walk_down(context: HTMLLIElement): HTMLLIElement | null {
+    const next = nextNode(context)
+    if (next) return next
+    const parent = firstNodeParent(context)
+    return parent ? this._walk_down(parent) : null
+  }
+
+  _last_child(context: HTMLLIElement): HTMLLIElement {
+    if (context.classList.contains('collapsed')) return context
+    const kids = childNodes(context)
+    if (kids.length === 0) return context
+    return this._last_child(kids[kids.length - 1])
+  }
+
+  // --- cursor & modes -------------------------------------------------------
+
+  getCursor(): HTMLLIElement | null {
+    return this.root.querySelector('.concord-cursor') as HTMLLIElement | null
+  }
+
+  getCursorRef(): NodeRef {
+    return this.setCursorContext(this.getCursor()!)
+  }
+
+  setCursorContext(node: HTMLLIElement): NodeRef {
+    return new NodeRef(this.o, node)
+  }
+
+  inTextMode(): boolean {
+    return this.root.classList.contains('textMode')
+  }
+
+  focusCursor(): void {
+    textOf(this.getCursor() ?? this.root)?.focus()
+  }
+
+  blurCursor(): void {
+    const c = this.getCursor()
+    if (c) textOf(c)?.blur()
+  }
+
+  setCursor(node: HTMLLIElement, multiple?: boolean, multipleRange?: boolean): void {
+    this.root
+      .querySelectorAll('.concord-cursor')
+      .forEach((el) => el.classList.remove('concord-cursor'))
+    node.classList.add('concord-cursor')
+    if (this.inTextMode()) {
+      this.o.editor.edit(node)
+    } else {
+      this.o.editor.select(node, multiple, multipleRange)
+      this.o.pasteBinFocus()
+    }
+    this.o.fireCallback('cursorMoved', this.setCursorContext(node))
+    this.o.editor.hideContextMenu()
+  }
+
+  setTextMode(textMode: boolean): void {
+    if (this.o.prefs().readonly) return
+    if (this.inTextMode() === textMode) return
+    if (textMode) {
+      this.root.classList.add('textMode')
+      this.o.editor.editorMode()
+      const c = this.getCursor()
+      if (c) this.o.editor.edit(c)
+    } else {
+      this.root.classList.remove('textMode')
+      this.root
+        .querySelectorAll('.editing')
+        .forEach((el) => el.classList.remove('editing'))
+      this.blurCursor()
+      const c = this.getCursor()
+      if (c) this.o.editor.select(c)
+    }
+  }
+
+  // --- change tracking ------------------------------------------------------
+
+  changed(): boolean {
+    return this.o.state.changed === true
+  }
+
+  clearChanged(): boolean {
+    this.o.state.changed = false
+    return true
+  }
+
+  markChanged(): boolean {
+    this.o.state.changed = true
+    if (!this.inTextMode()) {
+      this.root
+        .querySelectorAll('.concord-node.dirty')
+        .forEach((el) => el.classList.remove('dirty'))
+    }
+    return true
+  }
+
+  saveState(): boolean {
+    this.o.state.change = this.o.editor.cloneChildren()
+    this.o.state.changeTextMode = this.inTextMode()
+    if (this.inTextMode()) {
+      const range = getConcordRange()
+      this.o.state.changeRange = range ? range.cloneRange() : undefined
+    } else {
+      this.o.state.changeRange = undefined
+    }
+    return true
+  }
+
+  undo(): boolean {
+    const stateBefore = this.o.editor.cloneChildren()
+    const textModeBefore = this.inTextMode()
+    let beforeRange: Range | undefined
+    if (this.inTextMode()) {
+      const range = getConcordRange()
+      if (range) beforeRange = range.cloneRange()
+    }
+    if (this.o.state.change) {
+      this.root.replaceChildren(...this.o.state.change)
+      this.setTextMode(this.o.state.changeTextMode)
+      if (this.inTextMode()) {
+        this.focusCursor()
+        const range = this.o.state.changeRange
+        if (range) this.o.editor.restoreSelection(range)
+      }
+      this.o.state.change = stateBefore
+      this.o.state.changeTextMode = textModeBefore
+      this.o.state.changeRange = beforeRange
+      return true
+    }
+    return false
+  }
+
+  // --- expand / collapse ----------------------------------------------------
+
+  collapse(triggerCallbacks = true): void {
+    const node = this.getCursor()
+    if (!node) return
+    if (triggerCallbacks) this.o.fireCallback('collapse', this.setCursorContext(node))
+    node.classList.add('collapsed')
+    node.querySelectorAll('ol').forEach((ol) => {
+      if (ol.children.length > 0) ol.parentElement?.classList.add('collapsed')
+    })
+    this.markChanged()
+  }
+
+  expand(triggerCallbacks = true): void {
+    const node = this.getCursor()
+    if (!node) return
+    if (triggerCallbacks) this.o.fireCallback('expand', this.setCursorContext(node))
+    if (!node.classList.contains('collapsed')) return
+    node.classList.remove('collapsed')
+
+    if (scrollEnabled) {
+      const rect = node.getBoundingClientRect()
+      const cursorPosition = rect.top + window.scrollY
+      const cursorHeight = node.offsetHeight
+      const windowPosition = window.scrollY
+      const windowHeight = window.innerHeight
+      const text = textOf(node)
+      const lineHeight =
+        (text ? parseInt(getComputedStyle(text).lineHeight) || 0 : 0) + 6
+      if (cursorHeight > windowHeight) {
+        const ctscroll = cursorPosition - pixelsAboveOutlineArea - lineHeight
+        if (ctscroll > 0) window.scrollTo({ top: ctscroll })
+      } else if (
+        cursorPosition < windowPosition ||
+        cursorPosition + cursorHeight > windowPosition + windowHeight
+      ) {
+        if (cursorPosition < windowPosition) {
+          window.scrollTo({ top: cursorPosition })
+        } else if (cursorHeight + lineHeight < windowHeight) {
+          window.scrollTo({ top: cursorPosition - (windowHeight - cursorHeight) + lineHeight })
+        } else {
+          window.scrollTo({ top: cursorPosition })
+        }
+      }
+    }
+    this.markChanged()
+  }
+
+  expandAllLevels(): void {
+    const node = this.getCursor()
+    if (!node) return
+    node.classList.remove('collapsed')
+    node
+      .querySelectorAll('.concord-node')
+      .forEach((el) => el.classList.remove('collapsed'))
+  }
+
+  fullCollapse(): void {
+    this.root.querySelectorAll('.concord-node').forEach((el) => {
+      if (childNodes(el).length > 0) el.classList.add('collapsed')
+    })
+    const cursor = this.getCursor()
+    if (cursor) {
+      const parents = nodeParents(cursor)
+      const top = parents[parents.length - 1]
+      if (top) this.o.editor.select(top)
+    }
+  }
+
+  fullExpand(): void {
+    this.root
+      .querySelectorAll('.concord-node')
+      .forEach((el) => el.classList.remove('collapsed'))
+  }
+
+  subsExpanded(): boolean {
+    const node = this.getCursor()
+    if (!node) return false
+    return !node.classList.contains('collapsed') && childNodes(node).length > 0
+  }
+
+  countSubs(): number {
+    const node = this.getCursor()
+    return node ? childNodes(node).length : 0
+  }
+
+  level(): number {
+    const c = this.getCursor()
+    return c ? nodeParents(c).length + 1 : 1
+  }
+
+  // --- text formatting ------------------------------------------------------
+
+  private execFormat(command: string): void {
+    this.saveState()
+    if (this.inTextMode()) {
+      document.execCommand(command)
+    } else {
+      this.focusCursor()
+      document.execCommand('selectAll')
+      document.execCommand(command)
+      document.execCommand('unselect')
+      this.blurCursor()
+      this.o.pasteBinFocus()
+    }
+    this.markChanged()
+  }
+
+  bold(): void {
+    this.execFormat('bold')
+  }
+
+  italic(): void {
+    this.execFormat('italic')
+  }
+
+  strikethrough(): void {
+    this.execFormat('strikeThrough')
+  }
+
+  link(url: string): void {
+    if (!this.inTextMode()) return
+    if (!this.o.eventsEnabled()) {
+      this.o.onResume(() => this.link(url))
+      return
+    }
+    if (!getConcordRange()) this.o.editor.restoreSelection()
+    if (getConcordRange()) {
+      this.saveState()
+      document.execCommand('createLink', false, url)
+      this.markChanged()
+    }
+  }
+
+  // --- text content ---------------------------------------------------------
+
+  getLineText(): string | null {
+    const node = this.getCursor()
+    if (!node) return null
+    let text = textOf(node)?.innerHTML ?? ''
+    const m = text.match(/^(.+)<br>\s*$/)
+    if (m) text = m[1]
+    return this.o.editor.unescape(text)
+  }
+
+  setLineText(text: string): boolean {
+    this.saveState()
+    const node = this.getCursor()
+    if (!node) return false
+    const t = textOf(node)
+    if (t) t.innerHTML = this.o.editor.escape(text)
+    return true
+  }
+
+  getRenderMode(): boolean {
+    const rm = this.o.state.renderMode
+    return rm !== undefined ? rm === true : true
+  }
+
+  setRenderMode(mode: boolean): boolean {
+    this.o.state.renderMode = mode
+    this.redraw()
+    return true
+  }
+
+  setStyle(css: string): boolean {
+    this.o.setCustomStyle(css)
+    return true
+  }
+
+  // --- title & headers ------------------------------------------------------
+
+  getTitle(): string {
+    return this.o.state.title
+  }
+
+  setTitle(title: string): boolean {
+    this.o.state.title = title
+    return true
+  }
+
+  getHeaders(): OpmlHeaders {
+    const headers: OpmlHeaders = { ...this.o.state.headers }
+    headers['title'] = this.getTitle()
+    return headers
+  }
+
+  setHeaders(headers: OpmlHeaders): boolean {
+    this.o.state.headers = headers
+    this.markChanged()
+    return true
+  }
+
+  // --- movement -------------------------------------------------------------
+
+  go(direction: Direction, count = 1, multiple?: boolean, textMode?: boolean): boolean {
+    let cursor: HTMLLIElement | null = this.getCursor()
+    if (!cursor) return false
+    this.setTextMode(textMode ?? false)
+    let able = false
+    switch (direction) {
+      case UP:
+        for (let i = 0; i < count; i++) {
+          const prev = prevNode(cursor)
+          if (prev) {
+            cursor = prev
+            able = true
+          } else break
+        }
+        this.setCursor(cursor, multiple)
+        break
+      case DOWN:
+        for (let i = 0; i < count; i++) {
+          const next = nextNode(cursor)
+          if (next) {
+            cursor = next
+            able = true
+          } else break
+        }
+        this.setCursor(cursor, multiple)
+        break
+      case LEFT:
+        for (let i = 0; i < count; i++) {
+          const parent = firstNodeParent(cursor)
+          if (parent) {
+            cursor = parent
+            able = true
+          } else break
+        }
+        this.setCursor(cursor, multiple)
+        break
+      case RIGHT:
+        for (let i = 0; i < count; i++) {
+          const kids: HTMLLIElement[] = childNodes(cursor)
+          if (kids.length > 0) {
+            cursor = kids[0]
+            able = true
+          } else break
+        }
+        this.setCursor(cursor, multiple)
+        break
+      case FLATUP: {
+        let nodeCount = 0
+        let c: HTMLLIElement | null = cursor
+        while (c && nodeCount < count) {
+          c = this._walk_up(c)
+          if (c && !c.classList.contains('collapsed') && childNodes(c).length > 0) {
+            nodeCount++
+            able = true
+            if (nodeCount === count) {
+              this.setCursor(c, multiple)
+              break
+            }
+          }
+        }
+        break
+      }
+      case FLATDOWN: {
+        let nodeCount = 0
+        let c: HTMLLIElement | null = cursor
+        while (c && nodeCount < count) {
+          let next: HTMLLIElement | null = null
+          if (!c.classList.contains('collapsed')) {
+            next = childNodes(c)[0] ?? null
+          }
+          if (!next) next = this._walk_down(c)
+          c = next
+          if (c && !c.classList.contains('collapsed') && childNodes(c).length > 0) {
+            nodeCount++
+            able = true
+            if (nodeCount === count) this.setCursor(c, multiple)
+          }
+        }
+        break
+      }
+    }
+    this.markChanged()
+    return able
+  }
+
+  // --- insertion ------------------------------------------------------------
+
+  insert(insertText: string, insertDirection: Direction = DOWN, flInsertRawHtml?: boolean): HTMLLIElement {
+    this.saveState()
+    const cursor = this.getCursor()!
+    let level = nodeParents(cursor).length + 1
+    if (insertDirection === RIGHT) level += 1
+    else if (insertDirection === LEFT) level -= 1
+
+    const node = this.o.editor.makeNode()
+    node.classList.add('concord-level-' + level)
+    const text = textOf(node)!
+    text.classList.add('concord-level-' + level + '-text')
+    if (insertText && insertText !== '') {
+      text.innerHTML = flInsertRawHtml ? insertText : this.o.editor.escape(insertText)
+    }
+
+    switch (insertDirection) {
+      case DOWN:
+        cursor.insertAdjacentElement('afterend', node)
+        break
+      case RIGHT:
+        childOl(cursor, true)!.prepend(node)
+        this.expand(false)
+        break
+      case UP:
+        cursor.insertAdjacentElement('beforebegin', node)
+        break
+      case LEFT: {
+        const parent = firstNodeParent(cursor)
+        if (parent) parent.insertAdjacentElement('afterend', node)
+        break
+      }
+    }
+    this.setCursor(node)
+    this.markChanged()
+    this.o.fireCallback('insert', this.setCursorContext(node))
+    return node
+  }
+
+  insertImage(url: string): void {
+    if (this.inTextMode()) {
+      document.execCommand('insertImage', false, url)
+    } else {
+      this.insert('<img src="' + url + '">', DOWN, true)
+    }
+  }
+
+  insertText(text: string): void {
+    const editor = this.o.editor
+    const nodesOl = document.createElement('ol')
+    let lastLevel = 0
+    let startingLine = 0
+    const startingLevel = 0
+    let lastNode: HTMLLIElement | null = null
+    let parent: HTMLLIElement | null = null
+    const parents: Record<number, HTMLLIElement> = {}
+    const lines = text.split('\n')
+    let workflowy = true
+    let workflowyParent: HTMLLIElement | null = null
+
+    let firstLineWithContent = 0
+    for (let i = 0; i < lines.length; i++) {
+      if (!lines[i].match(/^\s*$/)) {
+        firstLineWithContent = i
+        break
+      }
+    }
+    if (lines.length > firstLineWithContent + 2) {
+      if (
+        lines[firstLineWithContent].match(/^([\t\s]*)-.*$/) == null &&
+        lines[firstLineWithContent].match(/^.+$/) &&
+        lines[firstLineWithContent + 1] === ''
+      ) {
+        startingLine = firstLineWithContent + 2
+        workflowyParent = editor.makeNode()
+        textOf(workflowyParent)!.innerHTML = lines[firstLineWithContent]
+      }
+    }
+    for (let i = startingLine; i < lines.length; i++) {
+      const line = lines[i]
+      if (line !== '' && !line.match(/^\s+$/) && line.match(/^([\t\s]*)-.*$/) == null) {
+        workflowy = false
+        break
+      }
+    }
+    if (!workflowy) {
+      startingLine = 0
+      workflowyParent = null
+    }
+    for (let i = startingLine; i < lines.length; i++) {
+      const line = lines[i]
+      if (line !== '' && !line.match(/^\s+$/)) {
+        const matches = line.match(/^([\t\s]*)(.+)$/)!
+        const node = editor.makeNode()
+        let nodeText = editor.escape(matches[2])
+        if (workflowy) {
+          const wm = nodeText.match(/^([\t\s]*)-\s*(.+)$/)
+          if (wm != null) nodeText = wm[2]
+        }
+        textOf(node)!.innerHTML = nodeText
+        let level = startingLevel
+        if (matches[1]) {
+          level = workflowy
+            ? matches[1].length / 2 + startingLevel
+            : matches[1].length + startingLevel
+          if (level > lastLevel) {
+            if (lastNode) parents[lastLevel] = lastNode
+            parent = lastNode
+          } else if (level > 0 && level < lastLevel) {
+            parent = parents[level - 1] ?? null
+          }
+        }
+        if (parent && level > 0) {
+          childOl(parent, true)!.appendChild(node)
+          parent.classList.add('collapsed')
+        } else {
+          for (const k of Object.keys(parents)) delete parents[+k]
+          nodesOl.appendChild(node)
+        }
+        lastNode = node
+        lastLevel = level
+      }
+    }
+    if (workflowyParent) {
+      if (nodesOl.children.length > 0) workflowyParent.classList.add('collapsed')
+      const wfOl = childOl(workflowyParent, true)!
+      while (nodesOl.firstChild) wfOl.appendChild(nodesOl.firstChild)
+      nodesOl.replaceChildren(workflowyParent)
+    }
+    if (nodesOl.children.length > 0) {
+      this.saveState()
+      this.setTextMode(false)
+      const cursor = this.getCursor()!
+      const inserted = Array.from(nodesOl.children) as HTMLLIElement[]
+      let anchor: Element = cursor
+      for (const n of inserted) {
+        anchor.insertAdjacentElement('afterend', n)
+        anchor = n
+      }
+      const next = nextNode(cursor)
+      if (next) this.setCursor(next)
+      this.o.state.clipboard = null
+      this.markChanged()
+      editor.recalculateLevels()
+    }
+  }
+
+  insertXml(opmltext: string | Document, dir: Direction = DOWN): boolean {
+    this.saveState()
+    const cursor = this.getCursor()!
+    let level = nodeParents(cursor).length + 1
+    if (dir === RIGHT) level += 1
+    else if (dir === LEFT) level -= 1
+
+    const doc =
+      typeof opmltext === 'string'
+        ? new DOMParser().parseFromString(opmltext, 'application/xml')
+        : opmltext
+    const body = doc.querySelector('body')
+    const nodes: HTMLLIElement[] = []
+    if (body) {
+      for (const outline of Array.from(body.children)) {
+        if (outline.tagName.toLowerCase() === 'outline') {
+          nodes.push(this.o.editor.build(outline, true, level))
+        }
+      }
+    }
+    const expansionState = doc.querySelector('expansionState')
+    if (expansionState && expansionState.textContent) {
+      const states = expansionState.textContent.split(',')
+      let nodeId = 1
+      for (const wrap of nodes) {
+        const all = [wrap, ...(wrap.querySelectorAll('.concord-node') as unknown as HTMLLIElement[])]
+        for (const n of all) {
+          if (states.indexOf('' + nodeId) >= 0) n.classList.remove('collapsed')
+          nodeId++
+        }
+      }
+    }
+    switch (dir) {
+      case DOWN: {
+        let anchor: Element = cursor
+        for (const n of nodes) {
+          anchor.insertAdjacentElement('afterend', n)
+          anchor = n
+        }
+        break
+      }
+      case RIGHT: {
+        const ol = childOl(cursor, true)!
+        for (const n of nodes.reverse()) ol.prepend(n)
+        this.expand(false)
+        break
+      }
+      case UP:
+        for (const n of nodes) cursor.insertAdjacentElement('beforebegin', n)
+        break
+      case LEFT: {
+        const parent = firstNodeParent(cursor)
+        if (parent) {
+          let anchor: Element = parent
+          for (const n of nodes) {
+            anchor.insertAdjacentElement('afterend', n)
+            anchor = n
+          }
+        }
+        break
+      }
+    }
+    this.markChanged()
+    return true
+  }
+
+  // --- delete ---------------------------------------------------------------
+
+  deleteLine(): void {
+    this.saveState()
+    if (this.inTextMode()) {
+      const cursor = this.getCursor()!
+      let p: HTMLLIElement | null = prevNode(cursor)
+      if (!p) p = firstNodeParent(cursor)
+      cursor.remove()
+      this.restoreAfterDelete(p)
+    } else {
+      const selected = Array.from(
+        this.root.querySelectorAll('.selected'),
+      ) as HTMLLIElement[]
+      if (selected.length >= 1) {
+        const first = selected[0]
+        let p: HTMLLIElement | null = prevNode(first)
+        if (!p) p = firstNodeParent(first)
+        selected.forEach((el) => el.remove())
+        this.restoreAfterDelete(p)
+      }
+    }
+    if (this.root.querySelectorAll('.concord-node').length === 0) {
+      const node = this.insert('', DOWN)
+      this.setCursor(node)
+    }
+    this.markChanged()
+  }
+
+  private restoreAfterDelete(p: HTMLLIElement | null): void {
+    if (p) {
+      this.setCursor(p)
+    } else {
+      const first = this.root.querySelector('.concord-node') as HTMLLIElement | null
+      if (first) this.setCursor(first)
+      else this.wipe()
+    }
+  }
+
+  deleteSubs(): void {
+    const node = this.getCursor()
+    if (node && childNodes(node).length > 0) {
+      this.saveState()
+      childOl(node)?.replaceChildren()
+    }
+    this.markChanged()
+  }
+
+  // --- reorganize -----------------------------------------------------------
+
+  promote(): void {
+    const node = this.getCursor()
+    if (!node) return
+    const kids = childNodes(node)
+    if (kids.length > 0) {
+      this.saveState()
+      for (const child of kids.reverse()) node.insertAdjacentElement('afterend', child)
+      const parentOl = node.parentElement
+      if (parentOl) {
+        this.o.editor.recalculateLevels(
+          Array.from(parentOl.querySelectorAll('.concord-node')) as HTMLLIElement[],
+        )
+      }
+      this.markChanged()
+    }
+  }
+
+  demote(): void {
+    const node = this.getCursor()
+    if (!node) return
+    const following: HTMLLIElement[] = []
+    let s = nextNode(node)
+    while (s) {
+      following.push(s)
+      s = nextNode(s)
+    }
+    if (following.length > 0) {
+      this.saveState()
+      const ol = childOl(node, true)!
+      for (const sib of following) ol.appendChild(sib)
+      node.classList.remove('collapsed')
+      this.o.editor.recalculateLevels(
+        Array.from(node.querySelectorAll('.concord-node')) as HTMLLIElement[],
+      )
+      this.markChanged()
+    }
+  }
+
+  reorg(direction: Direction, count = 1): boolean {
+    let able = false
+    let cursor = this.getCursor()!
+    let toMove: HTMLLIElement[] = [cursor]
+    const selected = Array.from(
+      this.root.querySelectorAll('.selected'),
+    ) as HTMLLIElement[]
+    if (selected.length > 1) {
+      cursor = selected[0]
+      toMove = selected
+    }
+    let iteration = 1
+
+    switch (direction) {
+      case UP: {
+        let prev = prevNode(cursor)
+        if (prev) {
+          while (iteration < count) {
+            const pp = prevNode(prev)
+            if (pp) prev = pp
+            else break
+            iteration++
+          }
+          this.saveState()
+          for (const n of toMove) prev.insertAdjacentElement('beforebegin', n)
+          able = true
+        }
+        break
+      }
+      case DOWN: {
+        let anchor = cursor
+        if (!this.inTextMode() && selected.length > 0) anchor = selected[selected.length - 1]
+        let next = nextNode(anchor)
+        if (next) {
+          while (iteration < count) {
+            const nn = nextNode(next)
+            if (nn) next = nn
+            else break
+            iteration++
+          }
+          this.saveState()
+          let insertAfter: Element = next
+          for (const n of toMove) {
+            insertAfter.insertAdjacentElement('afterend', n)
+            insertAfter = n
+          }
+          able = true
+        }
+        break
+      }
+      case LEFT: {
+        const outline = cursor.parentElement
+        if (outline && !outline.classList.contains('concord-root')) {
+          let parent = outline.parentElement as HTMLLIElement
+          while (iteration < count) {
+            const pp = firstNodeParent(parent)
+            if (pp) parent = pp
+            else break
+            iteration++
+          }
+          this.saveState()
+          let insertAfter: Element = parent
+          for (const n of toMove) {
+            insertAfter.insertAdjacentElement('afterend', n)
+            insertAfter = n
+          }
+          const following: HTMLLIElement[] = []
+          let s = nextNode(parent)
+          while (s) {
+            following.push(s, ...(Array.from(s.querySelectorAll('.concord-node')) as HTMLLIElement[]))
+            s = nextNode(s)
+          }
+          this.o.editor.recalculateLevels(following)
+          able = true
+        }
+        break
+      }
+      case RIGHT: {
+        let prev = prevNode(cursor)
+        if (prev) {
+          this.saveState()
+          while (iteration < count) {
+            const kids = childNodes(prev)
+            if (kids.length > 0) prev = kids[kids.length - 1]
+            else break
+            iteration++
+          }
+          const prevOl = childOl(prev, true)!
+          for (const n of toMove) prevOl.appendChild(n)
+          prev.classList.remove('collapsed')
+          this.o.editor.recalculateLevels(
+            Array.from(prev.querySelectorAll('.concord-node')) as HTMLLIElement[],
+          )
+          able = true
+        }
+        break
+      }
+    }
+    if (able) {
+      if (this.inTextMode()) {
+        const c = this.getCursor()
+        if (c) this.setCursor(c)
+      }
+      this.markChanged()
+      const node = this.getCursor()
+      if (node) this.o.fireCallback('reorg', this.setCursorContext(node))
+    }
+    return able
+  }
+
+  // --- clipboard ------------------------------------------------------------
+
+  copy(): void {
+    if (!this.inTextMode()) {
+      this.o.state.clipboard = Array.from(
+        this.root.querySelectorAll('.selected'),
+      ).map((n) => n.cloneNode(true) as HTMLLIElement)
+    }
+  }
+
+  cut(): void {
+    if (!this.inTextMode()) {
+      this.copy()
+      this.deleteLine()
+    }
+  }
+
+  paste(): void {
+    if (this.inTextMode()) return
+    const clip = this.o.state.clipboard
+    if (clip && clip.length > 0) {
+      this.saveState()
+      this.root
+        .querySelectorAll('.selected')
+        .forEach((el) => el.classList.remove('selected'))
+      const cursor = this.getCursor()!
+      const clones = clip.map((n) => n.cloneNode(true) as HTMLLIElement)
+      let anchor: Element = cursor
+      for (const n of clones) {
+        anchor.insertAdjacentElement('afterend', n)
+        anchor = n
+      }
+      this.setCursor(clones[0], clones.length > 1)
+      this.markChanged()
+    }
+  }
+
+  // --- redraw & misc --------------------------------------------------------
+
+  redraw(): void {
+    const visible = Array.from(
+      this.root.querySelectorAll('.concord-node'),
+    ).filter((n) => (n as HTMLElement).offsetParent !== null || n.isConnected)
+    let cursorIndex = 1
+    let ct = 1
+    for (const n of visible) {
+      if (n.classList.contains('concord-cursor')) {
+        cursorIndex = ct
+        break
+      }
+      ct++
+    }
+    const wasChanged = this.changed()
+    this.xmlToOutline(this.outlineToXml())
+    const visible2 = Array.from(this.root.querySelectorAll('.concord-node'))
+    ct = 1
+    for (const n of visible2) {
+      if (cursorIndex === ct) {
+        this.setCursor(n as HTMLLIElement)
+        break
+      }
+      ct++
+    }
+    if (wasChanged) this.markChanged()
+  }
+
+  runSelection(): void {
+    // eslint-disable-next-line no-eval
+    const value = eval(this.getLineText() ?? '')
+    this.deleteSubs()
+    this.insert(String(value), RIGHT)
+    this.o.script.makeComment()
+    this.go(LEFT, 1)
+  }
+
+  sort(): void {
+    this.saveState()
+    const cursor = this.getCursor()!
+    const parentOl = cursor.parentElement
+    if (!parentOl) return
+    const items = Array.from(parentOl.children) as HTMLElement[]
+    items.sort((a, b) => {
+      const ka = (a.textContent ?? '').toLowerCase()
+      const kb = (b.textContent ?? '').toLowerCase()
+      if (ka < kb) return -1
+      if (ka > kb) return 1
+      return 0
+    })
+    for (const li of items) parentOl.appendChild(li)
+    this.markChanged()
+  }
+
+  wipe(): void {
+    if (this.root.querySelectorAll('.concord-node').length > 0) this.saveState()
+    this.root.replaceChildren()
+    const node = this.o.editor.makeNode()
+    this.root.appendChild(node)
+    this.setTextMode(false)
+    this.setCursor(node)
+    this.markChanged()
+  }
+
+  // --- OPML I/O -------------------------------------------------------------
+
+  cursorToXml(): string {
+    return this.o.editor.opml(this.getCursor()!)
+  }
+
+  cursorToXmlSubsOnly(): string {
+    return this.o.editor.opml(this.getCursor()!, true)
+  }
+
+  getNodeOpml(node: HTMLLIElement): string {
+    return this.o.editor.opml(node, true)
+  }
+
+  outlineToText(): string {
+    let text = ''
+    for (const n of childNodes(this.root)) text += this.o.editor.textLine(n)
+    return text
+  }
+
+  saveCursor(): number {
+    let cursor = this.getCursor()
+    let ct = 0
+    while (cursor) {
+      const prev = this._walk_up(cursor)
+      if (prev) {
+        cursor = prev
+        ct++
+      } else break
+    }
+    return ct
+  }
+
+  outlineToXml(ownerName?: string, ownerEmail?: string, ownerId?: string): string {
+    const head: OpmlHeaders = this.getHeaders()
+    if (ownerName) head['ownerName'] = ownerName
+    if (ownerEmail) head['ownerEmail'] = ownerEmail
+    if (ownerId) head['ownerId'] = ownerId
+    head['title'] = this.getTitle() || ''
+    head['dateModified'] = new Date().toUTCString()
+
+    const expansionStates: number[] = []
+    let nodeId = 1
+    let cursor: HTMLLIElement | null = this.root.querySelector('.concord-node')
+    while (cursor) {
+      if (!cursor.classList.contains('collapsed') && childNodes(cursor).length > 0) {
+        expansionStates.push(nodeId)
+      }
+      nodeId++
+      let next: HTMLLIElement | null = null
+      if (!cursor.classList.contains('collapsed')) next = childNodes(cursor)[0] ?? null
+      if (!next) next = this._walk_down(cursor)
+      cursor = next
+    }
+    head['expansionState'] = expansionStates.join(',')
+    head['lastCursor'] = String(this.saveCursor())
+
+    let opml = ''
+    let indent = 0
+    const add = (s: string) => {
+      opml += '\t'.repeat(indent) + s + '\n'
+    }
+    add('<?xml version="1.0"?>')
+    add('<opml version="2.0">')
+    indent++
+    add('<head>')
+    indent++
+    for (const name of Object.keys(head)) {
+      if (head[name] !== undefined) {
+        add('<' + name + '>' + escapeXml(head[name]) + '</' + name + '>')
+      }
+    }
+    indent--
+    add('</head>')
+    add('<body>')
+    indent++
+    for (const n of childNodes(this.root)) opml += this.o.editor.opmlLine(n, indent)
+    indent--
+    add('</body>')
+    indent--
+    add('</opml>')
+    return opml
+  }
+
+  xmlToOutline(
+    xmlText: string | Document,
+    flSetFocus = true,
+    flInsertRawHtml?: boolean,
+  ): boolean {
+    const doc =
+      typeof xmlText === 'string'
+        ? new DOMParser().parseFromString(xmlText, 'application/xml')
+        : xmlText
+    this.root.replaceChildren()
+
+    const titleEl = doc.querySelector('head > title, title')
+    this.setTitle(titleEl?.textContent ?? '')
+
+    const headers: OpmlHeaders = {}
+    const head = doc.querySelector('head')
+    if (head) {
+      for (const child of Array.from(head.children)) {
+        headers[child.tagName] = child.textContent ?? ''
+      }
+    }
+    this.o.state.headers = headers
+
+    const body = doc.querySelector('body')
+    if (body) {
+      for (const outline of Array.from(body.children)) {
+        if (outline.tagName.toLowerCase() === 'outline') {
+          this.root.appendChild(this.o.editor.build(outline, true, undefined, flInsertRawHtml))
+        }
+      }
+    }
+    this.o.state.changed = false
+
+    const expansionState = doc.querySelector('expansionState')
+    if (expansionState && expansionState.textContent) {
+      const states = expansionState.textContent.split(/\s*,\s*/)
+      let nodeId = 1
+      let cursor: HTMLLIElement | null = this.root.querySelector('.concord-node')
+      while (cursor) {
+        if (states.indexOf('' + nodeId) >= 0) cursor.classList.remove('collapsed')
+        nodeId++
+        let next: HTMLLIElement | null = null
+        if (!cursor.classList.contains('collapsed')) next = childNodes(cursor)[0] ?? null
+        if (!next) next = this._walk_down(cursor)
+        cursor = next
+      }
+    }
+    this.setTextMode(false)
+
+    if (flSetFocus) {
+      const first = this.root.querySelector('.concord-node') as HTMLLIElement | null
+      if (first) this.setCursor(first)
+      const lastCursor = doc.querySelector('lastCursor')
+      if (lastCursor && lastCursor.textContent) {
+        const ix = parseInt(lastCursor.textContent)
+        if (!isNaN(ix)) {
+          let cursor = this.getCursor()
+          let moved: HTMLLIElement | null = null
+          for (let i = 1; i <= ix && cursor; i++) {
+            let next: HTMLLIElement | null = null
+            if (!cursor.classList.contains('collapsed')) next = childNodes(cursor)[0] ?? null
+            if (!next) next = this._walk_down(cursor)
+            cursor = next
+            moved = next
+          }
+          if (moved) this.setCursor(moved)
+        }
+      }
+    }
+    this.o.state.currentChange = this.o.editor.cloneChildren()
+    return true
+  }
+
+  // --- traversal ------------------------------------------------------------
+
+  visitLevel(cb: (child: NodeRef) => void): boolean {
+    const cursor = this.getCursor()
+    if (cursor) {
+      for (const child of childNodes(cursor)) cb(this.setCursorContext(child))
+    }
+    return true
+  }
+
+  visitToSummit(cb: (node: NodeRef) => boolean): boolean {
+    let cursor = this.getCursor()
+    while (cursor && cb(this.setCursorContext(cursor))) {
+      const parent = firstNodeParent(cursor)
+      if (parent) cursor = parent
+      else break
+    }
+    return true
+  }
+
+  visitAll(cb: (node: NodeRef) => boolean | void): void {
+    const nodes = Array.from(
+      this.root.querySelectorAll('.concord-node'),
+    ) as HTMLLIElement[]
+    for (const n of nodes) {
+      const ret = cb(this.setCursorContext(n))
+      if (ret === false) break
+    }
+  }
+}

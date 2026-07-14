@@ -1,0 +1,111 @@
+/* Outliner styles. Ported from concordstyles.css.
+   Font Awesome is gone: `.node-icon` is now an SVG mask whose visible color is
+   its background-color. The state glyphs (comment / drag targets) are supplied
+   as mask overrides by injectIconStyles(); this file provides layout + color. */
+
+.concord {
+  font-family: Geneva, Arial, sans-serif;
+  font-size: 12pt;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  line-height: 20px;
+  list-style-type: none;
+  color: #000;
+}
+.concord ol {
+  list-style-type: none;
+  padding: 0 0 0 16px;
+  margin: 0;
+  clear: both;
+}
+.concord .concord-node {
+  clear: left;
+  display: block;
+  min-height: 20px;
+}
+.concord .concord-node .concord-wrapper {
+  display: inline-block;
+  background-repeat: no-repeat;
+  position: relative;
+  padding-left: 20px;
+}
+
+/* --- the node icon (SVG mask) --------------------------------------------- */
+.node-icon {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: inline-block;
+  width: 1.1em;
+  height: 1.4em;
+  background-color: silver;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: left center;
+  mask-position: left center;
+  -webkit-mask-size: 0.9em;
+  mask-size: 0.9em;
+  cursor: default;
+}
+.concord .concord-node.collapsed > .concord-wrapper.type-icon .node-icon {
+  background-color: #000;
+}
+.concord .concord-node[opml-type='link'] > .concord-wrapper.type-icon .node-icon {
+  cursor: pointer;
+}
+.concord .concord-node.collapsed.selected > .concord-wrapper.type-icon .node-icon {
+  background-color: #fff;
+}
+.concord .concord-node.drop-sibling > .concord-wrapper .node-icon {
+  background-color: #000;
+}
+.concord .concord-node.drop-child > .concord-wrapper .node-icon {
+  background-color: #000;
+  transform: rotate(45deg);
+}
+
+/* --- text ----------------------------------------------------------------- */
+.concord .concord-node .concord-wrapper .concord-text {
+  cursor: text;
+  min-height: 20px;
+  line-height: 20px;
+  display: inline-block;
+  outline: none !important;
+  font-family: Geneva, Arial, sans-serif;
+  font-size: 12pt;
+  color: #000;
+  min-width: 10px;
+  white-space: pre-wrap;
+}
+.concord.dragging .concord-node .concord-wrapper .concord-text {
+  cursor: pointer;
+}
+.concord.readonly .concord-node .concord-wrapper .concord-text {
+  cursor: default !important;
+}
+
+/* --- selection ------------------------------------------------------------ */
+.concord .concord-node.selected > .concord-wrapper {
+  background-color: #000;
+  padding-right: 2px;
+}
+.concord .concord-node.selected > .concord-wrapper .concord-text {
+  color: #fff;
+}
+.concord .concord-node.collapsed > ol {
+  display: none;
+}
+.concord.dragging {
+  cursor: pointer !important;
+}
+
+/* --- links & comments ----------------------------------------------------- */
+.concord-text a,
+.concord-text a:visited {
+  cursor: pointer;
+}
+.concord-node.selected > .concord-wrapper .concord-text a,
+.concord-node.selected > .concord-wrapper .concord-text a:visited {
+  color: yellow;
+}
