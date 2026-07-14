@@ -16,13 +16,13 @@ export class Script {
   }
 
   makeComment(): boolean {
-    this.o.op.attributes.set('isComment', 'true')
+    this.o.op.attributes.setOne('isComment', 'true')
     this.o.op.getCursor()?.classList.add('concord-comment')
     return true
   }
 
   unComment(): boolean {
-    this.o.op.attributes.set('isComment', 'false')
+    this.o.op.attributes.setOne('isComment', 'false')
     this.o.op.getCursor()?.classList.remove('concord-comment')
     return true
   }

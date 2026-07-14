@@ -100,7 +100,7 @@ const outliner = createOutliner(document.getElementById('outliner')!, {
     typeIcons: appTypeIcons,
   },
   callbacks: {
-    insert: (node) => node.attributes.set('created', new Date().toUTCString()),
+    insert: (node) => node.attributes.setOne('created', new Date().toUTCString()),
     expand: (node) => { /* e.g. lazy-load an include node */ },
   },
 })
@@ -114,8 +114,8 @@ outliner.toggleComment()
 outliner.undo()
 const opml = outliner.toOpml()          // outline -> OPML
 
-// per-headline via the cursor handle:
-outliner.cursor.attributes.set('type', 'rss')
+// per-headline via the cursor handle (classic Concord attribute names):
+outliner.cursor.attributes.setOne('type', 'rss')
 outliner.cursor.getLineText()
 ```
 
@@ -138,8 +138,9 @@ surface so old code keeps working:
 - a **`$("#outliner").concord(options)` jQuery plugin** (installed if jQuery is
   present) — creation works as before, returning an instance with `.op`/`.editor`/`.script`;
 - **legacy callback names** (`opInsert`, `opExpand`, `opHover`, …) translated to the
-  modern ones, and **legacy node/attribute methods** (`attributes.getOne`/`setOne`,
-  `insertXml`, …) aliased to their new equivalents;
+  modern ones. Node/attribute methods keep Concord's original names
+  (`attributes.getOne`/`setOne`/`exists`/…, `NodeRef.insertXml`), so callback code
+  that touches them works unchanged;
 - `op*` calls before an explicit create auto-resolve/create the `#outliner` element,
   matching the original `defaultUtilsOutliner`.
 

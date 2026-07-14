@@ -46,21 +46,21 @@ export interface NodeRef {
   visitLevel(cb: (child: NodeRef) => void): void
   deleteSubs(): void
   clearChanged(): boolean
-  insertOpml(opml: string, dir?: Direction): boolean
+  insertXml(opml: string, dir?: Direction): boolean
 }
 
-/** Per-node OPML attribute operations. */
+/** Per-node OPML attribute operations (classic Concord names). */
 export interface NodeAttributesApi {
   getAll(): OpmlAttributes
-  get(name: string): string | undefined
-  has(name: string): boolean
-  set(name: string, value: string): boolean
+  getOne(name: string): string | undefined
+  exists(name: string): boolean
+  setOne(name: string, value: string): boolean
   /** Replace the whole attribute set. */
-  setAll(attributes: OpmlAttributes): OpmlAttributes
+  setGroup(attributes: OpmlAttributes): OpmlAttributes
   /** Merge into the existing attribute set. */
-  add(attributes: OpmlAttributes): OpmlAttributes
-  remove(name: string): boolean
-  clear(): boolean
+  addGroup(attributes: OpmlAttributes): OpmlAttributes
+  removeOne(name: string): boolean
+  makeEmpty(): boolean
 }
 
 /** The keystroke event passed to the `keystroke` callback. */

@@ -168,12 +168,12 @@ export const opSetTextMode = (flTextMode: boolean) => o().setTextMode(flTextMode
 export const opInTextMode = () => o().isTextMode()
 
 export const opGetAtts = (): OpmlAttributes => o().cursor.attributes.getAll()
-export const opGetOneAtt = (name: string) => o().cursor.attributes.get(name)
-export const opHasAtt = (name: string) => o().cursor.attributes.has(name)
+export const opGetOneAtt = (name: string) => o().cursor.attributes.getOne(name)
+export const opHasAtt = (name: string) => o().cursor.attributes.exists(name)
 export const opSetOneAtt = (name: string, value: string) =>
-  o().cursor.attributes.set(name, value)
-export const opSetAtts = (atts: OpmlAttributes) => o().cursor.attributes.setAll(atts)
-export const opAddAtts = (atts: OpmlAttributes) => o().cursor.attributes.add(atts)
+  o().cursor.attributes.setOne(name, value)
+export const opSetAtts = (atts: OpmlAttributes) => o().cursor.attributes.setGroup(atts)
+export const opAddAtts = (atts: OpmlAttributes) => o().cursor.attributes.addGroup(atts)
 
 export const opSetStyle = (css: string) => o().setStyle(css)
 export const opGetLineText = () => o().getLineText()

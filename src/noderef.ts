@@ -74,7 +74,7 @@ export class NodeRef implements NodeRefApi {
     return this.o.op.clearChanged()
   }
 
-  insertOpml(opml: string, dir: Direction = RIGHT): boolean {
+  insertXml(opml: string, dir: Direction = RIGHT): boolean {
     this.o.op.saveState()
     const node = this.element
     let level = nodeParents(node).length + 1
@@ -116,10 +116,5 @@ export class NodeRef implements NodeRefApi {
     }
     this.o.op.markChanged()
     return true
-  }
-
-  /** @deprecated use {@link insertOpml} */
-  insertXml(opml: string, dir?: Direction): boolean {
-    return this.insertOpml(opml, dir)
   }
 }

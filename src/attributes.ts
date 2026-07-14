@@ -47,15 +47,15 @@ export class NodeAttributes implements NodeAttributesApi {
     return getNodeAttributes(this.el())
   }
 
-  get(name: string): string | undefined {
+  getOne(name: string): string | undefined {
     return this.getAll()[name]
   }
 
-  has(name: string): boolean {
-    return this.get(name) !== undefined
+  exists(name: string): boolean {
+    return this.getOne(name) !== undefined
   }
 
-  set(name: string, value: string): boolean {
+  setOne(name: string, value: string): boolean {
     if (name === CSS_TEXT_CLASS) this.applyCssTextClass(value)
     const atts = this.getAll()
     atts[name] = value
@@ -68,7 +68,7 @@ export class NodeAttributes implements NodeAttributesApi {
     return true
   }
 
-  add(attributes: OpmlAttributes): OpmlAttributes {
+  addGroup(attributes: OpmlAttributes): OpmlAttributes {
     const el = this.el()
     if (attributes['type']) el.setAttribute('opml-type', attributes['type'])
     else el.removeAttribute('opml-type')
@@ -84,7 +84,7 @@ export class NodeAttributes implements NodeAttributesApi {
     return finalAttributes
   }
 
-  setAll(attributes: OpmlAttributes): OpmlAttributes {
+  setGroup(attributes: OpmlAttributes): OpmlAttributes {
     const el = this.el()
     this.applyCssTextClass(
       attributes[CSS_TEXT_CLASS] !== undefined ? attributes[CSS_TEXT_CLASS] : '',
@@ -104,7 +104,7 @@ export class NodeAttributes implements NodeAttributesApi {
     return attributes
   }
 
-  remove(name: string): boolean {
+  removeOne(name: string): boolean {
     const atts = this.getAll()
     if (atts[name]) {
       if (name === CSS_TEXT_CLASS) this.applyCssTextClass('')
@@ -118,7 +118,7 @@ export class NodeAttributes implements NodeAttributesApi {
     return false
   }
 
-  clear(): boolean {
+  makeEmpty(): boolean {
     const el = this.el()
     this.applyCssTextClass('')
     const had = Object.keys(this.getAll()).length > 0
@@ -128,35 +128,5 @@ export class NodeAttributes implements NodeAttributesApi {
     }
     if (had) this.o.op.markChanged()
     return had
-  }
-
-  // --- legacy aliases (classic Concord ConcordOpAttributes names) -----------
-  /** @deprecated use {@link get} */
-  getOne(name: string): string | undefined {
-    return this.get(name)
-  }
-  /** @deprecated use {@link set} */
-  setOne(name: string, value: string): boolean {
-    return this.set(name, value)
-  }
-  /** @deprecated use {@link setAll} */
-  setGroup(attributes: OpmlAttributes): OpmlAttributes {
-    return this.setAll(attributes)
-  }
-  /** @deprecated use {@link add} */
-  addGroup(attributes: OpmlAttributes): OpmlAttributes {
-    return this.add(attributes)
-  }
-  /** @deprecated use {@link clear} */
-  makeEmpty(): boolean {
-    return this.clear()
-  }
-  /** @deprecated use {@link has} */
-  exists(name: string): boolean {
-    return this.has(name)
-  }
-  /** @deprecated use {@link remove} */
-  removeOne(name: string): boolean {
-    return this.remove(name)
   }
 }

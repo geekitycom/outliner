@@ -149,7 +149,7 @@ export function handleKeydown(event: KeyboardEvent): void {
           const icon = cursor.querySelector('.node-icon')
           if (icon) icon.outerHTML = iconHtml('caret-right')
           cursor.insertAdjacentElement('beforebegin', cloned)
-          op.attributes.clear()
+          op.attributes.makeEmpty()
           op.deleteSubs()
           op.focusCursor()
           o.fireCallback('insert', op.setCursorContext(cursor))
