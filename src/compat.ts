@@ -203,7 +203,7 @@ export const opFirstSummit = () => {
 
 export const opXmlToOutline = (xmltext: string) => o().loadOpml(xmltext)
 export const opInsertXml = (xmltext: string, dir?: Direction) =>
-  o().insertOpml(xmltext, dir)
+  o().insertXml(xmltext, dir)
 export const opOutlineToXml = (
   ownerName?: string,
   ownerEmail?: string,

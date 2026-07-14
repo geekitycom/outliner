@@ -252,7 +252,7 @@ export class Outliner {
     return subsOnly ? this.op.cursorToXmlSubsOnly() : this.op.cursorToXml()
   }
 
-  insertOpml(opml: string | Document, dir?: Direction): boolean {
+  insertXml(opml: string | Document, dir?: Direction): boolean {
     return this.op.insertXml(opml, dir)
   }
 
