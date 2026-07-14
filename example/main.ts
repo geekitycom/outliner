@@ -110,6 +110,25 @@ for (const cmd of commands) {
   toolbar.appendChild(b)
 }
 
+// Readonly toggle — its label reflects the current state.
+const readonlySep = document.createElement('span')
+readonlySep.className = 'sep'
+toolbar.appendChild(readonlySep)
+
+const readonlyBtn = document.createElement('button')
+function syncReadonly() {
+  const on = outliner.prefs().readonly === true
+  readonlyBtn.textContent = on ? 'Readonly: on' : 'Readonly: off'
+  readonlyBtn.style.fontWeight = on ? '700' : '400'
+}
+readonlyBtn.addEventListener('click', () => {
+  outliner.setReadonly(outliner.prefs().readonly !== true)
+  syncReadonly()
+  render()
+})
+syncReadonly()
+toolbar.appendChild(readonlyBtn)
+
 function render() {
   const line = outliner.getLineText()
   let attrs = ''
