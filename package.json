@@ -4,7 +4,13 @@
   "type": "module",
   "license": "GPL-3.0-or-later",
   "description": "TypeScript port of Concord, Dave Winer / Small Picture's JavaScript outliner. Rewritten with no jQuery, no Bootstrap, and inline SVG icons instead of Font Awesome. GPL-3.0; derived from https://github.com/scripting/concord.",
-  "keywords": ["outliner", "opml", "concord", "typescript", "editor"],
+  "keywords": [
+    "outliner",
+    "opml",
+    "concord",
+    "typescript",
+    "editor"
+  ],
   "homepage": "https://github.com/geekitycom/outliner#readme",
   "repository": {
     "type": "git",
@@ -44,6 +50,8 @@
     "build:demo": "vite build --outDir dist-demo",
     "preview": "npm run build:demo && vite preview --outDir dist-demo",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "prepack": "npm run build",
@@ -56,8 +64,10 @@
     "eslint": "^10.7.0",
     "globals": "^17.7.0",
     "husky": "^9.1.7",
+    "jsdom": "^29.1.1",
     "typescript": "^5.6.3",
     "typescript-eslint": "^8.64.0",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "vitest": "^4.1.10"
   }
 }

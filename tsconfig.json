@@ -20,5 +20,5 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true
   },
-  "include": ["src", "example"]
+  "include": ["src", "example", "test"]
 }

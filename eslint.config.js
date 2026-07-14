@@ -21,6 +21,13 @@ export default tseslint.config(
     },
   },
   {
+    // Tests run in jsdom (browser globals) via Vitest.
+    files: ['test/**/*.ts'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+    },
+  },
+  {
     rules: {
       // eval() is banned; the one intentional use (runSelection) carries an
       // explicit eslint-disable with justification.
