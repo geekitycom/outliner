@@ -83,43 +83,7 @@ global rather than dozens of loose functions:
 `EMPTY_OPML`, the direction constants, `appTypeIcons`, etc. — is a property of the
 `Outliner` global.)
 
-### Migrating an old Concord app
-
-`dist/outliner.compat.global.js` is the maximum-compatibility drop-in. It defines
-`window.Outliner` *and* reproduces the classic `concordutils.js` surface, so an old
-Concord app keeps working **just by swapping the library `<script>`/`<link>` tags**
-(keep your existing jQuery/Bootstrap). It provides:
-
-- the bare `op*` functions, the `up`/`down`/`left`/`right` direction globals,
-  `initialOpmltext`, `appTypeIcons`, `defaultUtilsOutliner`, and the string helpers;
-- a **`$("#outliner").concord(options)` jQuery plugin** (installed if jQuery is
-  present) — creation works exactly as before, returning an instance with
-  `.op` / `.editor` / `.script`;
-- **legacy callback names** (`opInsert`, `opExpand`, `opHover`, …) translated to the
-  modern ones, and **legacy node/attribute methods** (`attributes.getOne`/`setOne`,
-  `insertXml`, …) aliased to their new equivalents;
-- `op*` calls before an explicit create auto-resolve/create the `#outliner` element,
-  matching the original `defaultUtilsOutliner` behavior.
-
-```html
-<!-- was: jquery + bootstrap + fontawesome + concordutils.js + concordstyles.css + concord.js -->
-<script src="jquery.min.js"></script>            <!-- keep your app's own jQuery/Bootstrap -->
-<script src="outliner.compat.global.js"></script>
-<link rel="stylesheet" href="outliner.css" />
-<div id="outliner"></div>
-<script>
-  // unchanged classic Concord code:
-  $("#outliner").concord({ prefs: { typeIcons: appTypeIcons } })
-  opXmlToOutline(initialOpmltext)
-  opExpand()
-</script>
-```
-
-Verified by running Concord's own example0 and example1 against this build. (Use the
-plain `outliner.global.js` instead if you're not migrating and don't want the loose
-globals.) Known minor gap: the `keystroke` callback receives the modern
-`KeystrokeEvent` (`{ keystroke, captured, domEvent }`), not the raw jQuery event, so
-old handlers reading `event.which` see `undefined` — use `event.domEvent.which`.
+Migrating an old Concord app? See [Migrating from old Concord](#migrating-from-old-concord).
 
 ## Using the library
 
@@ -161,13 +125,41 @@ insert/insertText/insertImage, bold/italic/strikethrough/link, comments,
 render-mode toggle, undo, cut/copy/paste, OPML import/export, attributes, headers,
 title, `visitAll`/`visitToSummit`, and remote `open`/`save` (now `fetch`-based).
 
-## Upgrading from old Concord (`src/compat.ts`)
+## Migrating from old Concord
 
-`src/compat.ts` is an **optional** compatibility layer — the modern equivalent of
-`concordutils.js`, minus the jQuery. Old Concord apps drove a single `#outliner`
-through global `op*` functions (`opExpand()`, `opReorg(dir, count)`,
-`opOutlineToXml()`, …). Register your instance once and those same calls keep
-working, each translated to the new `Outliner` API:
+`src/compat.ts` (built into `dist/outliner.compat.global.js`) is an **optional**
+compatibility layer — the modern equivalent of `concordutils.js`, minus the jQuery.
+It's left out of the core `index.ts` so it stays opt-in. It reproduces the classic
+surface so old code keeps working:
+
+- the bare `op*` functions, the `up`/`down`/`left`/`right` direction globals,
+  `initialOpmltext`, `appTypeIcons`, `defaultUtilsOutliner`, and the string helpers
+  (`filledString`, `multipleReplaceAll`, `secondsSince`, `readText`);
+- a **`$("#outliner").concord(options)` jQuery plugin** (installed if jQuery is
+  present) — creation works as before, returning an instance with `.op`/`.editor`/`.script`;
+- **legacy callback names** (`opInsert`, `opExpand`, `opHover`, …) translated to the
+  modern ones, and **legacy node/attribute methods** (`attributes.getOne`/`setOne`,
+  `insertXml`, …) aliased to their new equivalents;
+- `op*` calls before an explicit create auto-resolve/create the `#outliner` element,
+  matching the original `defaultUtilsOutliner`.
+
+**Drop-in, no build tools** — swap only the library tags; keep your jQuery/Bootstrap:
+
+```html
+<!-- was: jquery + bootstrap + fontawesome + concordutils.js + concordstyles.css + concord.js -->
+<script src="jquery.min.js"></script>            <!-- keep your app's own jQuery/Bootstrap -->
+<script src="outliner.compat.global.js"></script>
+<link rel="stylesheet" href="outliner.css" />
+<div id="outliner"></div>
+<script>
+  // unchanged classic Concord code:
+  $("#outliner").concord({ prefs: { typeIcons: appTypeIcons } })
+  opXmlToOutline(initialOpmltext)
+  opExpand()
+</script>
+```
+
+**With a bundler (ESM)** — import the helpers and register your instance:
 
 ```ts
 import { createOutliner } from './src'
@@ -175,18 +167,16 @@ import { setDefaultOutliner, opXmlToOutline, opExpand, opReorg, initialOpmltext 
 
 const outliner = createOutliner(document.getElementById('outliner')!)
 setDefaultOutliner(outliner)
-
-opXmlToOutline(initialOpmltext)   // start blank
+opXmlToOutline(initialOpmltext)
 opExpand()
 opReorg('right', 1)               // same string directions as before
 ```
 
-It also re-exports `appTypeIcons`, `initialOpmltext`, the lowercase direction
-constants (`up`/`down`/`left`/`right`/…), and the string helpers
-(`filledString`, `multipleReplaceAll`, `secondsSince`). `readText` is included
-but now hits URLs directly (the old scripting.com proxy is gone), so it needs a
-CORS-enabled endpoint. The layer is intentionally left out of the core `index.ts`
-so it stays opt-in.
+Verified by running Concord's own example0 and example1 against this build.
+`readText` now hits URLs directly (the old scripting.com proxy is gone), so it needs
+a CORS-enabled endpoint. Known minor gap: the `keystroke` callback receives the
+modern `KeystrokeEvent` (`{ keystroke, captured, domEvent }`), not the raw jQuery
+event, so old handlers reading `event.which` see `undefined` — use `event.domEvent.which`.
 
 ## Architecture
 
