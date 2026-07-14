@@ -19,17 +19,25 @@
     "./compat-global": "./dist/outliner.compat.global.js",
     "./styles.css": "./dist/outliner.css"
   },
-  "files": ["dist"],
-  "sideEffects": ["**/*.css"],
+  "files": [
+    "dist"
+  ],
+  "sideEffects": [
+    "**/*.css"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "npm run build:lib",
     "build:lib": "vite build -c vite.lib.config.ts && vite build -c vite.compat.config.ts && tsc -p tsconfig.build.json",
     "build:demo": "vite build --outDir dist-demo",
     "preview": "npm run build:demo && vite preview --outDir dist-demo",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepare": "husky"
   },
   "devDependencies": {
+    "@commitlint/cli": "^21.2.1",
+    "@commitlint/config-conventional": "^21.2.0",
+    "husky": "^9.1.7",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

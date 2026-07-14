@@ -13,7 +13,11 @@ export const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(
   typeof navigator !== 'undefined' ? navigator.userAgent : '',
 )
 
-export const VERSION = '3.0.5-ts'
+/**
+ * This package's version. Kept in sync with package.json by release-please via
+ * the trailing annotation — do not edit the annotation comment.
+ */
+export const VERSION = '0.1.0' // x-release-please-version
 
 /**
  * A minimal, valid OPML document with a single empty headline — the starting
