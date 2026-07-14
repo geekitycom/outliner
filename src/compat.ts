@@ -17,7 +17,6 @@ import type {
   Direction,
   NodeRef,
   OpmlAttributes,
-  OutlinerCallbacks,
   OutlinerOptions,
 } from './types'
 import { Outliner } from './outliner'
@@ -46,27 +45,6 @@ const instances = new WeakMap<HTMLElement, Outliner>()
 let defaultOutliner: Outliner | null = null
 let defaultSelector = '#outliner' // matches concordutils' defaultUtilsOutliner
 
-// Old Concord callback names -> the modern ones the Outliner fires.
-const LEGACY_CALLBACKS: Record<string, keyof OutlinerCallbacks> = {
-  opInsert: 'insert',
-  opCursorMoved: 'cursorMoved',
-  opExpand: 'expand',
-  opCollapse: 'collapse',
-  opReorg: 'reorg',
-  opHover: 'hover',
-  opContextMenu: 'contextMenu',
-  opKeystroke: 'keystroke',
-}
-
-function translateOptions(options?: OutlinerOptions): OutlinerOptions | undefined {
-  if (!options?.callbacks) return options
-  const out: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(options.callbacks)) {
-    out[LEGACY_CALLBACKS[key] ?? key] = value
-  }
-  return { ...options, callbacks: out as OutlinerCallbacks }
-}
-
 /** Get (or create) the outliner bound to a container element. */
 export function getOrCreateOutliner(
   el: HTMLElement,
@@ -74,12 +52,11 @@ export function getOrCreateOutliner(
 ): Outliner {
   let o = instances.get(el)
   if (!o) {
-    o = new Outliner(el, translateOptions(options))
+    o = new Outliner(el, options)
     instances.set(el, o)
   } else if (options) {
-    const t = translateOptions(options)!
-    if (t.prefs) o.prefs(t.prefs)
-    if (t.callbacks) o.setCallbacks(t.callbacks)
+    if (options.prefs) o.prefs(options.prefs)
+    if (options.callbacks) o.setCallbacks(options.callbacks)
   }
   return o
 }

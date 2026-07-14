@@ -94,7 +94,7 @@ export class Op {
       this.o.editor.select(node, multiple, multipleRange)
       this.o.pasteBinFocus()
     }
-    this.o.fireCallback('cursorMoved', this.setCursorContext(node))
+    this.o.fireCallback('opCursorMoved', this.setCursorContext(node))
     this.o.editor.hideContextMenu()
   }
 
@@ -179,7 +179,7 @@ export class Op {
   collapse(triggerCallbacks = true): void {
     const node = this.getCursor()
     if (!node) return
-    if (triggerCallbacks) this.o.fireCallback('collapse', this.setCursorContext(node))
+    if (triggerCallbacks) this.o.fireCallback('opCollapse', this.setCursorContext(node))
     node.classList.add('collapsed')
     node.querySelectorAll('ol').forEach((ol) => {
       if (ol.children.length > 0) ol.parentElement?.classList.add('collapsed')
@@ -190,7 +190,7 @@ export class Op {
   expand(triggerCallbacks = true): void {
     const node = this.getCursor()
     if (!node) return
-    if (triggerCallbacks) this.o.fireCallback('expand', this.setCursorContext(node))
+    if (triggerCallbacks) this.o.fireCallback('opExpand', this.setCursorContext(node))
     if (!node.classList.contains('collapsed')) return
     node.classList.remove('collapsed')
 
@@ -490,7 +490,7 @@ export class Op {
     }
     this.setCursor(node)
     this.markChanged()
-    this.o.fireCallback('insert', this.setCursorContext(node))
+    this.o.fireCallback('opInsert', this.setCursorContext(node))
     return node
   }
 
@@ -861,7 +861,7 @@ export class Op {
       }
       this.markChanged()
       const node = this.getCursor()
-      if (node) this.o.fireCallback('reorg', this.setCursorContext(node))
+      if (node) this.o.fireCallback('opReorg', this.setCursorContext(node))
     }
     return able
   }

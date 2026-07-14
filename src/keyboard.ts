@@ -152,7 +152,7 @@ export function handleKeydown(event: KeyboardEvent): void {
           op.attributes.makeEmpty()
           op.deleteSubs()
           op.focusCursor()
-          o.fireCallback('insert', op.setCursorContext(cursor))
+          o.fireCallback('opInsert', op.setCursorContext(cursor))
         }
       } else {
         event.preventDefault()

@@ -137,7 +137,7 @@ export class Outliner {
   }
 
   fireKeystroke(event: KeystrokeEvent): void {
-    this.state.callbacks.keystroke?.(event)
+    this.state.callbacks.opKeystroke?.(event)
   }
 
   pasteBinFocus(): void {

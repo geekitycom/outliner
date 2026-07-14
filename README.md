@@ -100,8 +100,8 @@ const outliner = createOutliner(document.getElementById('outliner')!, {
     typeIcons: appTypeIcons,
   },
   callbacks: {
-    insert: (node) => node.attributes.setOne('created', new Date().toUTCString()),
-    expand: (node) => { /* e.g. lazy-load an include node */ },
+    opInsert: (node) => node.attributes.setOne('created', new Date().toUTCString()),
+    opExpand: (node) => { /* e.g. lazy-load an include node */ },
   },
 })
 
@@ -137,10 +137,9 @@ surface so old code keeps working:
   (`filledString`, `multipleReplaceAll`, `secondsSince`, `readText`);
 - a **`$("#outliner").concord(options)` jQuery plugin** (installed if jQuery is
   present) — creation works as before, returning an instance with `.op`/`.editor`/`.script`;
-- **legacy callback names** (`opInsert`, `opExpand`, `opHover`, …) translated to the
-  modern ones. Node/attribute methods keep Concord's original names
-  (`attributes.getOne`/`setOne`/`exists`/…, `NodeRef.insertXml`), so callback code
-  that touches them works unchanged;
+- Concord's original names throughout — callbacks (`opInsert`, `opExpand`, `opHover`,
+  …) and node/attribute methods (`attributes.getOne`/`setOne`/`exists`/…,
+  `NodeRef.insertXml`) — so callback code works unchanged, no translation needed;
 - `op*` calls before an explicit create auto-resolve/create the `#outliner` element,
   matching the original `defaultUtilsOutliner`.
 

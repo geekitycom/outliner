@@ -119,7 +119,7 @@ export function bindEvents(o: Outliner): void {
     const wrapper = target.closest('.concord-wrapper')
     if (wrapper) {
       const node = closestNode(wrapper)
-      if (node) o.fireCallback('hover', op.setCursorContext(node))
+      if (node) o.fireCallback('opHover', op.setCursorContext(node))
     }
     // drag drop indicators
     if (o.state.dragging && !readonly()) {
@@ -149,7 +149,7 @@ export function bindEvents(o: Outliner): void {
     }
     const node = closestNode(target)
     if (node) {
-      o.fireCallback('contextMenu', op.setCursorContext(node))
+      o.fireCallback('opContextMenu', op.setCursorContext(node))
       op.setCursor(node)
       editor.showContextMenu(e.pageX, e.pageY)
     }
@@ -272,7 +272,7 @@ export function bindEvents(o: Outliner): void {
           if (!node.classList.contains('concord-cursor')) {
             root.querySelectorAll('.concord-cursor').forEach((el) => el.classList.remove('concord-cursor'))
             node.classList.add('concord-cursor')
-            o.fireCallback('cursorMoved', op.setCursorContext(node))
+            o.fireCallback('opCursorMoved', op.setCursorContext(node))
           }
         }
       } else {

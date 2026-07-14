@@ -53,8 +53,8 @@ const outliner = createOutliner(container, {
     typeIcons: appTypeIcons,
   },
   callbacks: {
-    insert: (node: NodeRefApi) => node.attributes.setOne('created', new Date().toUTCString()),
-    cursorMoved: () => render(),
+    opInsert: (node: NodeRefApi) => node.attributes.setOne('created', new Date().toUTCString()),
+    opCursorMoved: () => render(),
   },
 })
 

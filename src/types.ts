@@ -63,7 +63,7 @@ export interface NodeAttributesApi {
   makeEmpty(): boolean
 }
 
-/** The keystroke event passed to the `keystroke` callback. */
+/** The keystroke event passed to the `opKeystroke` callback. */
 export interface KeystrokeEvent {
   /** The normalized keystroke string, e.g. "meta-B" or "cursor-up". */
   keystroke: string
@@ -73,16 +73,16 @@ export interface KeystrokeEvent {
   domEvent: KeyboardEvent
 }
 
-/** Lifecycle callbacks. All are optional. */
+/** Lifecycle callbacks (classic Concord names). All are optional. */
 export interface OutlinerCallbacks {
-  insert?: (node: NodeRef) => void
-  cursorMoved?: (node: NodeRef) => void
-  expand?: (node: NodeRef) => void
-  collapse?: (node: NodeRef) => void
-  reorg?: (node: NodeRef) => void
-  hover?: (node: NodeRef) => void
-  contextMenu?: (node: NodeRef) => void
-  keystroke?: (event: KeystrokeEvent) => void
+  opInsert?: (node: NodeRef) => void
+  opCursorMoved?: (node: NodeRef) => void
+  opExpand?: (node: NodeRef) => void
+  opCollapse?: (node: NodeRef) => void
+  opReorg?: (node: NodeRef) => void
+  opHover?: (node: NodeRef) => void
+  opContextMenu?: (node: NodeRef) => void
+  opKeystroke?: (event: KeystrokeEvent) => void
 }
 
 /** Options accepted by the `Outliner` constructor. */
