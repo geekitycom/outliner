@@ -28,6 +28,13 @@ export default tseslint.config(
     },
   },
   {
+    // Playwright specs: node runner + browser globals inside page.evaluate.
+    files: ['e2e/**/*.ts'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.node },
+    },
+  },
+  {
     rules: {
       // eval() is banned; the one intentional use (runSelection) carries an
       // explicit eslint-disable with justification.

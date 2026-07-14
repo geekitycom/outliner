@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>e2e: global build</title>
+    <link rel="stylesheet" href="/dist/outliner.css" />
+    <script src="/dist/outliner.global.js"></script>
+  </head>
+  <body>
+    <div id="outliner"></div>
+    <script>
+      const o = Outliner.createOutliner(document.getElementById('outliner'))
+      o.loadOpml(
+        '<opml version="2.0"><head><title>t</title></head><body>' +
+          '<outline text="a"/></body></opml>',
+      )
+      window.outliner = o
+    </script>
+  </body>
+</html>

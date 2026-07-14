@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>e2e: Concord compat (jQuery)</title>
+    <!-- Mimics an old Concord page: jQuery + the compat global build. -->
+    <script src="/node_modules/jquery/dist/jquery.min.js"></script>
+    <script src="/dist/outliner.compat.global.js"></script>
+    <link rel="stylesheet" href="/dist/outliner.css" />
+  </head>
+  <body>
+    <div id="outliner"></div>
+    <script>
+      // Classic Concord creation + op* globals, unchanged.
+      window.outliner = $('#outliner').concord({ prefs: { typeIcons: appTypeIcons } })
+      setDefaultOutliner(window.outliner)
+      opXmlToOutline(
+        '<opml version="2.0"><head><title>t</title></head><body>' +
+          '<outline text="a"/></body></opml>',
+      )
+    </script>
+  </body>
+</html>

@@ -31,18 +31,27 @@ npm run preview    # build the demo and serve it over http
 npm run typecheck  # tsc --noEmit
 npm test           # run the Vitest suite (jsdom)
 npm run test:watch # Vitest watch mode
+npm run test:e2e   # run the Playwright suite (chromium; installs once)
 ```
 
 ## Tests
 
-Unit/integration tests run under **Vitest + jsdom** (`test/`), focused on the
-structural, browser-independent logic where the risk lives: OPML round-trip,
-the structural operations (insert / reorg / promote / demote / expand-collapse /
-delete), `undo`, the `insertText` multi-line parser, attributes (including that
-`data-opml` survives `cloneNode`), and `getKeystroke` command mapping. Editing,
-`execCommand` formatting, selection, drag, and the compat drop-in are left to
-manual/E2E checks (jsdom can't drive contenteditable). CI (`.github/workflows/ci.yml`)
-runs lint, typecheck, tests, and build; a `pre-push` hook runs the suite.
+Two tiers:
+
+- **Unit/integration — Vitest + jsdom** (`test/`, `npm test`): the structural,
+  browser-independent logic where the risk lives — OPML round-trip, the structural
+  operations (insert / reorg / promote / demote / expand-collapse / delete), `undo`,
+  the `insertText` multi-line parser, attributes (including that `data-opml` survives
+  `cloneNode`), and `getKeystroke` command mapping.
+- **E2E — Playwright + Chromium** (`e2e/`, `npm run test:e2e`): the browser-only
+  behaviors jsdom can't — real editing (type / Return / Tab), `execCommand`
+  formatting, readonly, and the **Concord compat drop-in** (jQuery `$().concord()`
+  plugin + `op*` globals, via a self-contained fixture). Requires
+  `npx playwright install chromium` once.
+
+CI (`.github/workflows/ci.yml`) runs both (lint, typecheck, unit tests, build in one
+job; the Playwright suite in another). The `pre-push` hook runs the fast unit suite;
+E2E is left to CI.
 
 ## Distribution
 
