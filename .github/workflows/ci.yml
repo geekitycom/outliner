@@ -33,7 +33,7 @@ jobs:
       # the Playwright webServer builds dist/ and serves the fixtures
       - run: npm run test:e2e
       - uses: actions/upload-artifact@v5
-        if: ${{ !cancelled() }}
+        if: failure()
         with:
           name: playwright-report
           path: playwright-report/
