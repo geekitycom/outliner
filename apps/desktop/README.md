@@ -41,15 +41,24 @@ than replacing what's in the current one.
   isn't one yet.
 - **Save As…** (`Cmd/Ctrl-Shift-S`) — native save picker, updates the OPML `<head><title>` to
   the new file's basename, then writes.
+- **Quit** (`Cmd/Ctrl-Q`) — checks *every* open window, not just the focused one. If none are
+  dirty, the app exits immediately. Otherwise Rust works through the dirty windows one at a
+  time: focus the window, ask its frontend to run the same unsaved-changes prompt Close Window
+  uses, and wait for an answer before moving on. Cancel at any window aborts the whole quit —
+  nothing else is prompted and no window closes. Save or Don't Save moves on to the next dirty
+  window (a failed or cancelled Save aborts the quit, same as Close Window). Once every dirty
+  window is resolved, the app exits. See "Design notes" below for why this needed a custom menu
+  item and a Rust-side dirty-state map, not just an `ExitRequested` handler.
 
 Because Open never discards a window's content — it either loads into an already-blank window
-or opens a new one — only the window's native close path still needs the unsaved-changes guard.
-That prompt (**Save / Don't Save / Cancel**, via an in-app `<dialog>` — the dialog plugin's
-`ask`/`confirm` are two-button only and have no room for Cancel) lives in `confirmClose()` in
-`src/document.ts`. Choosing Save there actually saves before proceeding, and aborts the whole
-close if that save is cancelled or fails. Read/write errors surface through the dialog plugin's
-`message()` rather than a thrown promise. The window title tracks the current file and gets a
-leading `•` while the document is dirty.
+or opens a new one — only the window's native close path and Quit still need the unsaved-changes
+guard. That prompt (**Save / Don't Save / Cancel**, via an in-app `<dialog>` — the dialog plugin's
+`ask`/`confirm` are two-button only and have no room for Cancel) lives in `confirmClose()` (Close
+Window / the traffic light) and `confirmQuit()` (Quit) in `src/document.ts`, both built on the
+same `confirmDiscard()` prompt. Choosing Save actually saves before proceeding, and aborts the
+whole close/quit if that save is cancelled or fails. Read/write errors surface through the dialog
+plugin's `message()` rather than a thrown promise. The window title tracks the current file and
+gets a leading `•` while the document is dirty.
 
 Each window is its own Tauri webview with its own JS realm, so `document.ts`'s module-level
 `outliner`/`currentPath` state is automatically per-window — no registry keyed by window label
@@ -57,8 +66,9 @@ is needed to keep multiple documents' state apart.
 
 ## Menu layout
 
-- **Outliner** (macOS app menu) — About, Services, Hide/Hide Others/Show All, Quit
-  (all predefined).
+- **Outliner** (macOS app menu) — About, Services, Hide/Hide Others/Show All (all predefined),
+  and Quit (`Cmd/Ctrl-Q`, deliberately a *custom* item, not predefined — see "Design notes" below
+  for why).
 - **File** — New, Open…, Save, Save As…, Close Window (see above).
 - **Edit** — Cut, Copy, Paste only. See "Design notes" below for why Undo and Select All are
   deliberately absent.
@@ -95,7 +105,7 @@ is needed to keep multiple documents' state apart.
 
 ## Design notes
 
-Six choices here look like omissions or overengineering but aren't — please don't "fix" them
+Eight choices here look like omissions or overengineering but aren't — please don't "fix" them
 without reading this first.
 
 **1. The menu is built in Rust (`build_menu` in `src-tauri/src/lib.rs`), not JS.** It used to be
@@ -190,6 +200,62 @@ frontend to show via the dialog plugin's `message()` — a much smaller, path-sp
 opening up the fs plugin. `@tauri-apps/plugin-dialog` is still used for the native pickers
 themselves (`dialog:default` in `capabilities/default.json`, i.e. `allow-message` /
 `allow-open` / `allow-save`) — only the actual disk reads/writes are custom.
+
+**7. Quit (`Cmd/Ctrl-Q`) is a custom menu item, not the predefined `.quit()` — resist the urge
+to "simplify" it back.** Every *other* native item in the app submenu (About, Services,
+Hide/Hide Others/Show All) is predefined, and design note 1 above explains why predefined is
+usually the right call. Quit is the exception, for a reason that's easy to miss: the predefined
+Quit item maps to Cocoa's `sel!(terminate:)` (muda's macOS menu backend), which sends
+`terminate:` straight to `NSApplication` — and neither this app nor `tao` (the windowing crate
+underneath Tauri) ever gets a chance to intervene first. Verified directly against `tao`
+0.35.3's source: there is no `applicationShouldTerminate` handler anywhere in it. The obvious
+fix for "Cmd-Q discards unsaved changes" is switching `.run(context)` to
+`.build(context)?.run(|app, event| ...)` and handling `RunEvent::ExitRequested` with
+`api.prevent_exit()` — and that fix *is* necessary (see `run()` in `src-tauri/src/lib.rs`), but
+on its own it does **not** catch Cmd-Q: `ExitRequested` only fires for exits "requested by user
+interaction" (in practice, the last window closing) or triggered programmatically via
+`AppHandle::exit`/`restart`. A predefined Quit item's `terminate:` bypasses all of that — the
+process just tears down mid-edit, discarding whatever's unsaved in every open window, with no
+Rust-side hook that ever runs. A *custom* menu item doesn't have this problem: it emits a menu
+event like every other custom item here (see the "quit" `MenuItemBuilder` in `build_menu` and
+the `"quit"` case in `on_menu_event`), which keeps Cmd-Q inside code this app controls instead of
+handing it straight to the OS. If you're looking at this thinking "why isn't Quit just
+`.quit()` like Close Window is `.close_window()`" — this is why, and switching it back
+silently reintroduces the data loss it exists to prevent.
+
+**8. Dirty state is tracked twice, once per window in JS and once for the whole app in Rust —
+and the second copy has to be cleaned up on window destruction, or quit can hang forever.**
+Rust needs to know, before Quit prompts anyone, which of the open windows have unsaved changes
+— but dirty state (`isDirty()` / `hasChanged()`) lives entirely in each window's JS, and Rust has
+no way to reach into a webview's JS state on demand. So it's pushed instead of pulled: `set_dirty`
+(an app-defined command, like `read_file`/`write_file` in design note 6 — no capability grant
+needed) writes into a `Mutex<HashMap<String, bool>>` keyed by window label, managed as Tauri
+state. `syncTitle()` in `src/document.ts` is the single call site — it already runs on every
+change that could flip dirty state (typing, structural ops, mouse-driven expand/collapse/reorder,
+save, load; see its own doc comments for why each of those triggers it) — and it only calls
+`set_dirty` when the value actually *changes* from what was last sent, not on every keystroke, so
+this isn't an IPC round trip per character typed.
+
+The map entry **must** be removed when a window is destroyed, and this has to happen in Rust
+(`on_window_event`'s `WindowEvent::Destroyed` case in `run()`), not in the frontend: a destroyed
+webview can't run any more JS, so it can never send a final "I'm gone" `set_dirty` call itself.
+Without this cleanup, closing a dirty window through Close Window or the traffic light (both of
+which already resolve or discard the prompt before destroying it, but don't clear the *Rust-side*
+map entry themselves) would leave a stale `true` behind forever — and the next Quit would try to
+focus and prompt a window that no longer exists, hanging with no visible window to show the
+prompt in and no way to ever quit. `advance_quit` in `lib.rs` also defends against this same
+staleness independently (a window can vanish between reading the map and looking it up), but the
+`Destroyed` cleanup is what keeps the map from accumulating stale entries in the first place.
+
+One more wrinkle worth knowing about if you're reading `advance_quit`/`quit_response`: the quit
+flow's own `app.exit(0)` at the end triggers `RunEvent::ExitRequested` right back into the
+handler design note 7 describes. If the dirty map still said "dirty" at that moment, the app
+would refuse to quit against its own exit call. The fix isn't a bypass flag — it's making the
+state honest: when the user picks Don't Save during a quit prompt, `confirmQuit()` in
+`document.ts` actually calls `outliner.clearChanged()` (which `confirmClose()`'s "discard" branch
+doesn't need to, since closing the window drops its map entry anyway via the `Destroyed` cleanup
+above). By the time `advance_quit` calls `app.exit(0)`, the map is genuinely empty, so
+`ExitRequested`'s dirty check passes it through cleanly.
 
 ## Known limitations
 

@@ -3,6 +3,7 @@ import '@andrewshell/outliner/styles.css'
 import './styles.css'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen } from '@tauri-apps/api/event'
+import { invoke } from '@tauri-apps/api/core'
 import {
   initDocument,
   openPathAtBoot,
@@ -10,6 +11,7 @@ import {
   saveDocument,
   saveDocumentAs,
   confirmClose,
+  confirmQuit,
   reportError,
 } from './document'
 import { showShortcuts } from './shortcuts'
@@ -33,22 +35,66 @@ if (bootPath) void openPathAtBoot(bootPath)
 
 const appWindow = getCurrentWindow()
 
+// True while this window has an unsaved-changes prompt open, whether from
+// Close Window/the traffic light (closeWindow()) or from Cmd-Q (handleMenuQuit()
+// below). Guards against the two racing each other and stacking a second
+// <dialog> on top of the first — e.g. Cmd-Q arriving for this window while
+// its own Close Window prompt is still awaiting an answer. Rust's
+// QuitInProgress flag (src-tauri/src/lib.rs) already stops a second Cmd-Q
+// from starting a second *quit flow*, but that doesn't cover this
+// window-local case, since Close Window's prompt isn't part of any quit
+// flow at all.
+let unsavedPromptOpen = false
+
 // Shared by the Close Window menu item (via the 'menu-close-window'
 // listener below) and the native close button's guard further down, so
 // both routes run the same unsaved-changes prompt before actually closing.
 async function closeWindow(): Promise<void> {
-  if (await confirmClose()) {
-    // destroy() needs its own core:window:allow-destroy grant (core:default
-    // only covers read-only window commands, see the README's "Design
-    // notes"). If that's ever missing again, report it instead of leaving
-    // the close button silently doing nothing, as it did before this was
-    // caught.
-    try {
-      await appWindow.destroy()
-    } catch (err) {
-      await reportError('close', 'window', err)
+  if (unsavedPromptOpen) return
+  unsavedPromptOpen = true
+  try {
+    if (await confirmClose()) {
+      // destroy() needs its own core:window:allow-destroy grant (core:default
+      // only covers read-only window commands, see the README's "Design
+      // notes"). If that's ever missing again, report it instead of leaving
+      // the close button silently doing nothing, as it did before this was
+      // caught.
+      try {
+        await appWindow.destroy()
+      } catch (err) {
+        await reportError('close', 'window', err)
+      }
     }
+  } finally {
+    unsavedPromptOpen = false
   }
+}
+
+// Rust's quit flow (advance_quit in src-tauri/src/lib.rs) emits this to one
+// dirty window at a time and waits for quit_response before moving on to
+// the next one or exiting — see the README's "Quit" design note for the
+// full flow. confirmQuit() (not confirmClose()) runs the actual prompt: it
+// reuses the same confirmDiscard() UI, but on "Don't Save" it also clears
+// this document's changed state, which confirmClose()'s callers don't need
+// since they destroy the window right after instead of leaving it open.
+async function handleMenuQuit(): Promise<void> {
+  if (unsavedPromptOpen) {
+    // Another prompt already owns this window's dialog (Close Window
+    // racing a Cmd-Q aimed at the same window — see unsavedPromptOpen's
+    // comment above). Report "cancel" rather than leaving Rust's quit flow
+    // waiting for a response that would otherwise never come: aborting the
+    // quit is always the safe outcome here, never a silent data loss.
+    await invoke('quit_response', { label: appWindow.label, proceed: false })
+    return
+  }
+  unsavedPromptOpen = true
+  let proceed: boolean
+  try {
+    proceed = await confirmQuit()
+  } finally {
+    unsavedPromptOpen = false
+  }
+  await invoke('quit_response', { label: appWindow.label, proceed })
 }
 
 // The app menu lives entirely in Rust (src-tauri/src/lib.rs) because a JS
@@ -69,6 +115,11 @@ void listen('menu-save', () => void saveDocument())
 void listen('menu-save-as', () => void saveDocumentAs())
 void listen('menu-keyboard-shortcuts', () => void showShortcuts())
 void listen('menu-close-window', () => void closeWindow())
+// 'quit' is the one menu item Rust doesn't resolve a focused window for
+// before emitting (see build_menu's "quit" MenuItemBuilder doc comment) —
+// it's targeted at specific dirty windows one at a time instead, which may
+// or may not include this one.
+void listen('menu-quit', () => void handleMenuQuit())
 
 // Outliner menu: every no-argument operation maps straight to a library
 // call, so they're driven from a table instead of a growing if/else chain —

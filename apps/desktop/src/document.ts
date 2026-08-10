@@ -50,9 +50,17 @@ export async function reportError(action: string, path: string, err: unknown): P
   })
 }
 
+// Last dirty value pushed to Rust via set_dirty, compared against on every
+// syncTitle() call so the IPC call only fires when the value actually
+// *changes* — syncTitle() runs on every keystroke (see initDocument below),
+// and Rust's quit flow only needs to know when a window's dirty state
+// flips, not a running commentary on every character typed.
+let lastSentDirty: boolean | null = null
+
 function syncTitle(): void {
+  const dirty = isDirty()
   const base = currentPath ? basename(currentPath) : 'Untitled — Outliner'
-  const title = isDirty() ? `• ${base}` : base
+  const title = dirty ? `• ${base}` : base
   // setTitle() needs its own core:window:allow-set-title grant (core:default
   // only covers read-only window commands) — if that permission ever
   // regresses, fail loudly to devtools instead of silently, as it did
@@ -62,6 +70,19 @@ function syncTitle(): void {
     .catch((err: unknown) => {
       console.error('setTitle failed:', err)
     })
+
+  if (dirty !== lastSentDirty) {
+    lastSentDirty = dirty
+    // set_dirty is an app-defined command (like read_file/write_file), not
+    // a plugin command, so it isn't ACL-gated — no capability entry needed.
+    // Rust keeps its own copy of this window's dirty flag because the quit
+    // flow (Cmd-Q, see main.ts's 'menu-quit' listener) has to know *before*
+    // prompting anything whether there's anything to prompt about, and Rust
+    // has no way to reach into this window's JS state on its own.
+    invoke('set_dirty', { label: getCurrentWindow().label, dirty }).catch((err: unknown) => {
+      console.error('set_dirty failed:', err)
+    })
+  }
 }
 
 export function isDirty(): boolean {
@@ -148,6 +169,40 @@ export async function confirmClose(): Promise<boolean> {
   if (choice === 'cancel') return false
   if (choice === 'save') return saveDocument()
   return true // discard
+}
+
+/**
+ * Runs the same unsaved-changes prompt as confirmClose(), for a window
+ * Rust's quit flow (advance_quit in src-tauri/src/lib.rs) has singled out
+ * as dirty in response to Cmd-Q. Not just confirmClose() reused as-is,
+ * because the two callers need different things done with a "discard"
+ * choice:
+ *
+ * - confirmClose()'s caller (closeWindow() in main.ts) destroys this window
+ *   right after a truthy result, which drops its entry from Rust's dirty
+ *   map on its own (see the Destroyed handler in lib.rs) — nothing further
+ *   to clean up here.
+ * - This window stays *open* through a quit — Rust works through every
+ *   dirty window in turn, only exiting once they're all resolved, and
+ *   "Don't Save" doesn't close anything. So the changed flag has to be
+ *   cleared explicitly here: otherwise the window would still read as
+ *   dirty when the quit flow's final app.exit(0) call re-triggers Rust's
+ *   own ExitRequested check, which would then refuse to exit an app whose
+ *   own quit flow just finished successfully. Making the state honest here
+ *   (rather than giving Rust a "trust me" bypass flag) is what keeps that
+ *   from happening.
+ */
+export async function confirmQuit(): Promise<boolean> {
+  if (!isDirty()) return true
+  const choice = await confirmDiscard()
+  if (choice === 'cancel') return false
+  if (choice === 'save') return saveDocument()
+  // discard: see doc comment above for why this clears the flag itself
+  // instead of leaving it to whatever closed the window in confirmClose()'s
+  // case (nothing closes this window during a quit).
+  outliner.clearChanged()
+  syncTitle()
+  return true
 }
 
 /**

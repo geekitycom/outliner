@@ -4,7 +4,9 @@
 // are a much smaller grant: plain std::fs, with io errors mapped to strings
 // for the frontend to surface via the dialog plugin's message().
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Mutex;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::webview::WebviewWindowBuilder;
 use tauri::{Emitter, Manager, WebviewUrl};
@@ -29,6 +31,115 @@ impl WindowCounter {
   fn next_label(&self) -> String {
     format!("win-{}", self.0.fetch_add(1, Ordering::SeqCst))
   }
+}
+
+/// Per-window "has unsaved changes" flags, keyed by window label. Dirty
+/// state lives in each window's JS (`isDirty()` in document.ts); this is
+/// Rust's own copy of it, pushed from the frontend via `set_dirty` below
+/// rather than pulled, since Rust has no way to reach into a webview's JS
+/// state on demand. The quit flow (`advance_quit` below) needs this to know
+/// *before* prompting anything whether there's anything to prompt about.
+///
+/// A window's entry MUST be removed when it's destroyed (see the
+/// `on_window_event` handler in `run()`) — a stale `true` left behind for a
+/// window that no longer exists would block quit forever with no window
+/// left to show a prompt in, and a destroyed webview can't clean up after
+/// itself.
+struct DirtyWindows(Mutex<HashMap<String, bool>>);
+
+/// Guards the quit flow against re-entrancy. Cmd-Q pressed a second time —
+/// whether the OS just re-delivers the keystroke, or the user genuinely
+/// presses it again while a dirty-window prompt from the first press is
+/// still open — must not start a second walk through the dirty windows on
+/// top of the first one. Reset to `false` whenever a flow ends, either by
+/// finishing (`advance_quit`'s `app.exit(0)` path) or being cancelled
+/// (`quit_response`'s `proceed: false` path), so an aborted quit never
+/// leaves the app unable to start a new one.
+struct QuitInProgress(AtomicBool);
+
+#[tauri::command]
+fn set_dirty(app: tauri::AppHandle, label: String, dirty: bool) {
+  app.state::<DirtyWindows>().0.lock().unwrap().insert(label, dirty);
+}
+
+/// Reports the outcome of the unsaved-changes prompt a `menu-quit` event
+/// (from `advance_quit` below) triggered in `label`'s window, and drives the
+/// rest of the quit flow forward.
+///
+/// `proceed: false` is Cancel — abort the whole quit. Nothing else is
+/// prompted and no window closes; just clear the re-entrancy guard so a
+/// later Cmd-Q can start over.
+///
+/// `proceed: true` covers both Save (already written to disk, with the
+/// document's changed state already cleared) and Don't Save (changed state
+/// *also* already cleared on the frontend — see `confirmQuit` in
+/// document.ts for why that matters here). Either way this window is done,
+/// so its entry is marked clean right here rather than waiting on
+/// `set_dirty`'s own separate `invoke()` call to arrive first: that call
+/// and this one are sent in order from the same webview, but nothing
+/// guarantees Rust *processes* two independent IPC calls in send order, and
+/// racing that would make the quit flow's progress non-deterministic.
+#[tauri::command]
+fn quit_response(app: tauri::AppHandle, label: String, proceed: bool) {
+  if !proceed {
+    app.state::<QuitInProgress>().0.store(false, Ordering::SeqCst);
+    return;
+  }
+  app
+    .state::<DirtyWindows>()
+    .0
+    .lock()
+    .unwrap()
+    .insert(label, false);
+  advance_quit(&app);
+}
+
+/// Drives the quit flow one step: finds the next dirty window (if any),
+/// focuses it, and asks its frontend to run the unsaved-changes prompt.
+/// Used both to start the flow (from the "quit" menu event) and to continue
+/// it (from `quit_response` once a window resolves) — there's no real
+/// difference between "start" and "continue" here, since both just mean
+/// "find the next dirty window, or exit if there isn't one."
+fn advance_quit(app: &tauri::AppHandle) {
+  let next_dirty = {
+    let dirty_windows = app.state::<DirtyWindows>();
+    let dirty = dirty_windows.0.lock().unwrap();
+    dirty.iter().find(|(_, &d)| d).map(|(label, _)| label.clone())
+  };
+
+  let Some(label) = next_dirty else {
+    // Nothing left to ask about — the dirty map is genuinely empty, so
+    // ExitRequested's own check (in run()'s event handler below) will see
+    // that and let this exit through instead of bouncing it back here.
+    app.state::<QuitInProgress>().0.store(false, Ordering::SeqCst);
+    app.exit(0);
+    return;
+  };
+
+  let Some(window) = app.get_webview_window(&label) else {
+    // The map is stale — the window closed through some other route
+    // (Close Window, the traffic light) without on_window_event's cleanup
+    // having run yet, or in the gap between the lock above and here. Drop
+    // the entry and move on rather than getting stuck asking about a
+    // window that no longer exists.
+    app.state::<DirtyWindows>().0.lock().unwrap().remove(&label);
+    advance_quit(app);
+    return;
+  };
+
+  // WebviewWindow::set_focus() is a plain Rust method (see window/mod.rs in
+  // the tauri crate — no #[tauri::command] attribute), called directly here
+  // rather than invoked from JS, so it needs no core:window:allow-set-focus
+  // entry in capabilities/default.json: the ACL only gates frontend-to-
+  // backend invoke() calls, the same reasoning the README's design notes
+  // already give for focused_window()/emit_to() needing no capability
+  // grant either. A window that can't be focused still gets the prompt —
+  // emit_to below doesn't depend on set_focus succeeding. Ignoring the
+  // error here, rather than aborting the whole quit, is what keeps an
+  // unfocusable window from hanging the flow forever with no way to quit
+  // at all.
+  let _ = window.set_focus();
+  let _ = app.emit_to(&label, "menu-quit", ());
 }
 
 /// Opens `path` in a brand-new window. This is a command (rather than
@@ -84,12 +195,34 @@ fn create_document_window(app: &tauri::AppHandle, path: Option<&str>) -> tauri::
 /// specific (Save would save whichever document happened to build the
 /// menu, not the focused one) — and once that window closes, its JS
 /// context is gone and the menu stops working at all. Native predefined
-/// items (Cut/Copy/Paste, Close Window, Quit, ...) don't have this
-/// problem: macOS routes them through the responder chain to the focused
-/// window on its own. Custom items (New, Open, Save, Save As, Keyboard
-/// Shortcuts) are routed explicitly in `on_menu_event` below, by resolving
-/// the focused window and emitting *to* it specifically.
+/// items (Cut/Copy/Paste, Close Window, ...) don't have this problem:
+/// macOS routes them through the responder chain to the focused window on
+/// its own. Custom items (New, Open, Save, Save As, Keyboard Shortcuts,
+/// Quit) are routed explicitly in `on_menu_event` below, by resolving the
+/// focused window and emitting *to* it specifically — Quit is the one
+/// exception that doesn't resolve a focused window at all, since it may
+/// need to work through *several* windows in turn; see its own doc comment
+/// below and `advance_quit`.
 fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+  // Custom item, NOT the predefined `.quit()`, even though every other
+  // native item in this submenu is predefined. The predefined Quit item
+  // maps to Cocoa's `sel!(terminate:)` (muda's macOS backend), which sends
+  // `terminate:` straight to NSApplication — and nothing in this app, or in
+  // tao underneath it, ever gets a chance to intervene first (verified
+  // against tao 0.35.3's source: there is no `applicationShouldTerminate`
+  // handler anywhere in it). That means Tauri's `RunEvent::ExitRequested` —
+  // the hook the "just add ExitRequested + prevent_exit()" fix relies on —
+  // never fires for Cmd-Q at all: the process tears down mid-edit,
+  // discarding whatever's unsaved in every open window, and no amount of
+  // Rust-side event handling can catch it after the fact. A *custom* item
+  // does emit a menu event, routed through on_menu_event below like every
+  // other custom item here, which is what keeps Cmd-Q inside code this app
+  // controls. Do not "simplify" this back to `.quit()` — see the "Quit"
+  // design note in README.md first.
+  let quit_item = MenuItemBuilder::with_id("quit", "Quit Outliner")
+    .accelerator("CmdOrCtrl+Q")
+    .build(app)?;
+
   let app_submenu = SubmenuBuilder::new(app, "Outliner")
     .about(None)
     .separator()
@@ -99,7 +232,7 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
     .hide_others()
     .show_all()
     .separator()
-    .quit()
+    .item(&quit_item)
     .build()?;
 
   // Cmd-N/O/S/Shift-S are all safe accelerators: they're absent from
@@ -241,6 +374,8 @@ pub fn run() {
       }
 
       app.manage(WindowCounter(AtomicU32::new(1)));
+      app.manage(DirtyWindows(Mutex::new(HashMap::new())));
+      app.manage(QuitInProgress(AtomicBool::new(false)));
 
       let menu = build_menu(app.handle())?;
       app.set_menu(menu)?;
@@ -255,6 +390,25 @@ pub fn run() {
           if let Err(err) = create_document_window(app, None) {
             log::error!("failed to open new window: {err}");
           }
+          return;
+        }
+
+        // Quit doesn't act on "the document the user is looking at" either
+        // — it may need to work through *several* dirty windows in turn,
+        // not just the focused one, so it's handled by advance_quit
+        // instead of falling into the focused-window branch below. See the
+        // "quit" MenuItemBuilder's doc comment in build_menu for why this
+        // is a custom item at all.
+        if id == "quit" {
+          let quitting = app.state::<QuitInProgress>();
+          if quitting.0.swap(true, Ordering::SeqCst) {
+            // A quit flow is already in progress — e.g. Cmd-Q pressed
+            // twice in a row, or again while a dirty-window prompt from
+            // the first press is still open. Let that flow finish instead
+            // of stacking a second one on top of it.
+            return;
+          }
+          advance_quit(app);
           return;
         }
 
@@ -323,11 +477,62 @@ pub fn run() {
       Ok(())
     })
     .plugin(tauri_plugin_dialog::init())
+    // Registered once here, on the Builder, so it covers every window this
+    // app ever creates — including ones spawned later by New/Open — not
+    // just whatever exists at startup.
+    .on_window_event(|window, event| {
+      if let tauri::WindowEvent::Destroyed = event {
+        // See DirtyWindows's doc comment: a stale `true` left behind for a
+        // window that no longer exists would block quit forever with no
+        // window left to prompt in, and a destroyed webview can't clean up
+        // after itself — so this has to happen here, not in the frontend.
+        window.state::<DirtyWindows>().0.lock().unwrap().remove(window.label());
+      }
+    })
     .invoke_handler(tauri::generate_handler![
       read_file,
       write_file,
-      open_path_in_new_window
+      open_path_in_new_window,
+      set_dirty,
+      quit_response
     ])
-    .run(tauri::generate_context!())
-    .expect("error while running tauri application");
+    .build(tauri::generate_context!())
+    .expect("error while building tauri application")
+    .run(|app, event| {
+      // The other two-thirds of the Cmd-Q fix (see the "quit" item's doc
+      // comment in build_menu for the first third). `.run(context)` alone
+      // never surfaces ExitRequested at all; `.build(context)?.run(handler)`
+      // is what makes it observable, letting `api.prevent_exit()` below
+      // stop an exit that would otherwise discard unsaved changes.
+      //
+      // `code: None` is an exit "requested by user interaction" — in
+      // practice here, the OS-driven "last window closed" exit, since
+      // Quit itself never reaches the OS anymore (it's the custom item
+      // above). By the time that fires, the closing window's own guard
+      // (`onCloseRequested` in main.ts) has already prompted if needed,
+      // and this crate's on_window_event Destroyed handler above has
+      // already dropped that window's entry — so checking the dirty map
+      // here is correct for both Cmd-Q *and* the last-window-close case.
+      //
+      // `code: Some(_)` is a *programmatic* exit — the only one this crate
+      // ever triggers is advance_quit's `app.exit(0)`, which only runs once
+      // the dirty map is confirmed empty. Skipping the dirty check entirely
+      // for Some(_) is what keeps that call from deadlocking against this
+      // very handler: prevent_exit() firing on our own already-verified
+      // exit would leave the app unquittable.
+      if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+        if code.is_none() {
+          let any_dirty = app
+            .state::<DirtyWindows>()
+            .0
+            .lock()
+            .unwrap()
+            .values()
+            .any(|&dirty| dirty);
+          if any_dirty {
+            api.prevent_exit();
+          }
+        }
+      }
+    });
 }
