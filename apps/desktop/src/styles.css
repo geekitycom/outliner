@@ -45,3 +45,60 @@ body {
 .confirm-discard-buttons button {
   padding: 6px 14px;
 }
+
+/* Help ▸ Keyboard Shortcuts sheet (shortcuts.ts). Wider than the default
+   .app-modal max-width since it's a reference table, not a short prompt. */
+.app-modal:has(.shortcuts) {
+  max-width: 640px;
+  width: 90vw;
+}
+
+.shortcuts h2 {
+  margin: 0 0 12px;
+}
+
+.shortcuts-columns {
+  column-count: 2;
+  column-gap: 32px;
+}
+
+.shortcuts-group {
+  break-inside: avoid;
+  margin-bottom: 16px;
+}
+
+.shortcuts-group h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #666;
+}
+
+.shortcuts-group table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.shortcuts-group td {
+  padding: 2px 0;
+  font-size: 13px;
+  vertical-align: baseline;
+}
+
+.shortcuts-group td.shortcut-keys {
+  white-space: nowrap;
+  padding-right: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #333;
+}
+
+.shortcuts-close {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.shortcuts-close button {
+  padding: 6px 14px;
+}

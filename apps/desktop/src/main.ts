@@ -3,12 +3,14 @@ import '@andrewshell/outliner/styles.css'
 import './styles.css'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { initDocument, confirmClose } from './document'
+import { installMenu } from './menu'
 
-// Chrome-free: no toolbar, no buttons. The menu (a later commit) and this
-// module are the only things that call into document.ts.
+// Chrome-free: no toolbar, no buttons. The menu and this module are the
+// only things that call into document.ts.
 const container = document.getElementById('app') as HTMLElement
 const outliner = createOutliner(container)
 initDocument(outliner)
+void installMenu()
 
 // newDocument()/openDocument() run this same prompt internally before
 // touching the document; the window's close button doesn't go through
