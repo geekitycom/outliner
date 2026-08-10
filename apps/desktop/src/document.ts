@@ -1,5 +1,13 @@
-// Owns the current file path and dirty state, and the four file operations
-// the menu (a later commit) will hang off: New, Open, Save, Save As.
+// Owns the current file path and dirty state, and three of the four file
+// operations the menu (in src-tauri/src/lib.rs) drives: Open, Save, Save
+// As. New is the odd one out — it always opens a brand-new window and needs
+// no state from this module, so Rust creates that window directly with no
+// round trip through here (see create_document_window in lib.rs).
+//
+// Module-level state (`outliner`, `currentPath` below) is safe per-window:
+// each Tauri window is a separate webview with its own JS realm, so there's
+// exactly one copy of this module's state per window automatically — no
+// registry keyed by window label is needed.
 import type { Outliner } from '@andrewshell/outliner'
 import { EMPTY_OPML } from '@andrewshell/outliner'
 import { invoke } from '@tauri-apps/api/core'
@@ -129,7 +137,10 @@ export function initDocument(instance: Outliner): void {
  * Runs the unsaved-changes prompt when the document is dirty and reports
  * whether it's safe to proceed — with the Save choice actually saved first,
  * and the whole thing aborted if that save is itself cancelled or fails.
- * Shared by New, Open, and the window's onCloseRequested handler.
+ * Used by the window's close guard (main.ts) — New and Open no longer need
+ * it: New always opens a fresh window (nothing here to discard) and Open
+ * either loads into an already-blank window or opens a new one, so neither
+ * ever discards this window's content.
  */
 export async function confirmClose(): Promise<boolean> {
   if (!isDirty()) return true
@@ -139,25 +150,18 @@ export async function confirmClose(): Promise<boolean> {
   return true // discard
 }
 
-export async function newDocument(): Promise<void> {
-  if (!(await confirmClose())) return
-  currentPath = null
-  outliner.loadOpml(EMPTY_OPML)
-  outliner.clearChanged()
-  syncTitle()
-}
-
-export async function openDocument(): Promise<void> {
-  if (!(await confirmClose())) return
-
-  const selected = await open({ filters: OPML_FILTERS })
-  if (typeof selected !== 'string') return // dialog cancelled
-
+/**
+ * Reads `path` from disk and loads it into *this* window in place, on the
+ * assumption that whatever was here before is safe to discard (callers are
+ * responsible for that: either it's an untouched blank document, or this is
+ * a brand-new window that never had anything else in it).
+ */
+async function loadFromDisk(path: string): Promise<void> {
   let contents: string
   try {
-    contents = await invoke<string>('read_file', { path: selected })
+    contents = await invoke<string>('read_file', { path })
   } catch (err) {
-    await reportError('open', selected, err)
+    await reportError('open', path, err)
     return
   }
 
@@ -165,14 +169,53 @@ export async function openDocument(): Promise<void> {
   try {
     doc = parseOpml(contents)
   } catch {
-    await reportError('open', selected, 'not a valid OPML file')
+    await reportError('open', path, 'not a valid OPML file')
     return
   }
 
   outliner.loadOpml(doc)
   outliner.clearChanged()
-  currentPath = selected
+  currentPath = path
   syncTitle()
+}
+
+/**
+ * Loads `path` at window startup — main.ts calls this when it finds a
+ * `?path=` query param, which is how a window created by Open (see below)
+ * or by a future "open with" integration learns what to load. No
+ * confirmClose() guard: the window just booted, so there's nothing in it
+ * yet to discard.
+ */
+export async function openPathAtBoot(path: string): Promise<void> {
+  await loadFromDisk(path)
+}
+
+/**
+ * File > Open. Shows the native picker, then either loads the chosen file
+ * into this window or hands it to a new one, depending on whether this
+ * window already "belongs" to a document:
+ *
+ * - blank AND untouched (no path, not dirty) — nothing to lose, load here.
+ * - anything else (has a path, or is dirty, or both) — this window's
+ *   document is left completely alone and the new file opens in a new
+ *   window instead. That means no confirmClose() prompt on this path
+ *   either: we're not discarding this window's content, just not touching
+ *   it.
+ */
+export async function openDocument(): Promise<void> {
+  const selected = await open({ filters: OPML_FILTERS })
+  if (typeof selected !== 'string') return // dialog cancelled
+
+  if (currentPath === null && !isDirty()) {
+    await loadFromDisk(selected)
+    return
+  }
+
+  try {
+    await invoke('open_path_in_new_window', { path: selected })
+  } catch (err) {
+    await reportError('open', selected, err)
+  }
 }
 
 export async function saveDocument(): Promise<boolean> {

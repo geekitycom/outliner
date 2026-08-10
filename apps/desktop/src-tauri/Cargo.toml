@@ -24,3 +24,6 @@ log = "0.4"
 tauri = { version = "2.11.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
+# Percent-encodes a document path into the query string used to hand it off
+# to a newly-created window — see create_document_window() in src/lib.rs.
+percent-encoding = "2"
