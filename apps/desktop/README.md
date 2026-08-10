@@ -50,7 +50,7 @@ structural edits, and save/load.
 
 ## Design notes
 
-Two choices here look like omissions but aren't — please don't "complete" them without
+Three choices here look like omissions but aren't — please don't "complete" them without
 reading this first.
 
 **1. The Edit menu has no Undo or Select All.** On macOS, the app menu gets first crack at a
@@ -65,7 +65,22 @@ lets those three fall through to the native handler — and WKWebView actually *
 items present for its native clipboard handling to work at all, which is why those three (and
 only those three) are predefined items in the Edit menu.
 
-**2. File I/O uses two custom Rust commands (`read_file` / `write_file` in
+**2. `core:default` (in `capabilities/default.json`) only grants read-only window
+permissions.** It includes things like `allow-title` and `allow-get-all-windows`, but *not*
+`allow-set-title`, `allow-destroy`, `allow-set-size`, `allow-center`, `allow-minimize`, or any
+other window command that changes state. A denied permission fails silently — the promise
+rejects but nothing surfaces it by default — which is exactly how the window title (and its `•`
+dirty marker) and the red traffic-light close button ended up doing nothing for a while: the app
+called `setTitle()`/`destroy()` without either permission granted, and both call sites `void`-ed
+the returned promise. Both are now covered by explicit `core:window:allow-set-title` and
+`core:window:allow-destroy` entries, and both call sites now surface a rejection (see
+`syncTitle()` in `src/document.ts` and the `onCloseRequested` handler in `src/main.ts`). Any
+*new* window operation (`setSize`, `center`, `minimize`, `setFullscreen`, ...) needs its own
+explicit `core:window:allow-*` entry added to `capabilities/default.json` — check
+`src-tauri/gen/schemas/macOS-schema.json` for the exact permission string, and don't assume
+`core:default` already covers it.
+
+**3. File I/O uses two custom Rust commands (`read_file` / `write_file` in
 `src-tauri/src/lib.rs`) instead of `tauri-plugin-fs`.** `tauri-plugin-fs` scopes filesystem
 access by path pattern declared up front in capabilities. A path the user just picked from the
 native Open/Save dialog isn't in any such scope — there's no way to declare "whatever the user

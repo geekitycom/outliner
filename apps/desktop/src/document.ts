@@ -28,7 +28,14 @@ function parseOpml(text: string): Document {
   return doc
 }
 
-async function reportError(action: string, path: string, err: unknown): Promise<void> {
+/**
+ * Shared error surface for both file I/O failures and rejected Tauri
+ * commands (e.g. a window permission that's missing from
+ * capabilities/default.json — see the README's "Design notes" section).
+ * `path` is used verbatim as the message's subject, not necessarily a
+ * filesystem path.
+ */
+export async function reportError(action: string, path: string, err: unknown): Promise<void> {
   await message(`Could not ${action} "${basename(path)}": ${String(err)}`, {
     title: 'Outliner',
     kind: 'error',
@@ -38,7 +45,15 @@ async function reportError(action: string, path: string, err: unknown): Promise<
 function syncTitle(): void {
   const base = currentPath ? basename(currentPath) : 'Untitled — Outliner'
   const title = isDirty() ? `• ${base}` : base
-  void getCurrentWindow().setTitle(title)
+  // setTitle() needs its own core:window:allow-set-title grant (core:default
+  // only covers read-only window commands) — if that permission ever
+  // regresses, fail loudly to devtools instead of silently, as it did
+  // before this was caught.
+  getCurrentWindow()
+    .setTitle(title)
+    .catch((err: unknown) => {
+      console.error('setTitle failed:', err)
+    })
 }
 
 export function isDirty(): boolean {
