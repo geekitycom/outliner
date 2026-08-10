@@ -13,6 +13,7 @@ import {
   reportError,
 } from './document'
 import { showShortcuts } from './shortcuts'
+import { promptExpandTo } from './expand-to'
 
 // Chrome-free: no toolbar, no buttons. The menu (built in Rust, see
 // src-tauri/src/lib.rs) and this module are the only things that call into
@@ -63,6 +64,36 @@ void listen('menu-save', () => void saveDocument())
 void listen('menu-save-as', () => void saveDocumentAs())
 void listen('menu-keyboard-shortcuts', () => void showShortcuts())
 void listen('menu-close-window', () => void closeWindow())
+
+// View menu: every no-argument operation maps straight to a library call,
+// so they're driven from a table instead of a growing if/else chain — see
+// the View section of README.md's "Menu layout" for what each one does.
+// expand()/collapse() call markChanged() internally (expansion state is
+// part of the saved OPML), so these legitimately mark the document dirty
+// and the title's `•` picks that up like any other edit — nothing here
+// needs to suppress that.
+const VIEW_ACTIONS: Record<string, () => void> = {
+  'menu-expand-subheads': () => outliner.expand(),
+  'menu-collapse-subheads': () => outliner.collapse(),
+  'menu-expand-all': () => outliner.expandAllSubs(),
+  'menu-expand-document': () => outliner.expandEverything(),
+  'menu-collapse-document': () => outliner.collapseEverything(),
+  // Full View, per MORE: pop out of any hoist, then expand everything, so
+  // the whole document is visible with nothing hidden or hoisted away.
+  'menu-full-view': () => {
+    outliner.deHoistAll()
+    outliner.expandEverything()
+  },
+  'menu-hoist': () => outliner.hoist(),
+  'menu-de-hoist': () => outliner.deHoist(),
+  'menu-de-hoist-all': () => outliner.deHoistAll(),
+}
+for (const [event, action] of Object.entries(VIEW_ACTIONS)) {
+  void listen(event, action)
+}
+// Expand To… is the odd one out: it needs a level number from the user
+// first, via the in-app prompt in expand-to.ts.
+void listen('menu-expand-to', () => void promptExpandTo(outliner))
 
 // The native close button (red traffic light) doesn't go through the menu
 // at all, so it needs its own guard here.

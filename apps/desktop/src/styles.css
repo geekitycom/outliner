@@ -46,6 +46,32 @@ body {
   padding: 6px 14px;
 }
 
+/* View ▸ Expand To… prompt (expand-to.ts). row-reverse keeps Cancel visually
+   left-of Expand while Expand stays first in DOM order, which is what makes
+   it the form's implicit default button (Return in the number field submits
+   'ok' — see the comment in expand-to.ts). */
+.expand-to p {
+  margin: 0 0 12px;
+}
+
+.expand-to input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  margin-bottom: 16px;
+}
+
+.expand-to-buttons {
+  display: flex;
+  flex-direction: row-reverse;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.expand-to-buttons button {
+  padding: 6px 14px;
+}
+
 /* Help ▸ Keyboard Shortcuts sheet (shortcuts.ts). Wider than the default
    .app-modal max-width since it's a reference table, not a short prompt. */
 .app-modal:has(.shortcuts) {
