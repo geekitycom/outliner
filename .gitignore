@@ -8,3 +8,7 @@ test-results
 playwright-report
 blob-report
 .playwright
+
+# Tauri
+apps/*/src-tauri/target/
+apps/*/src-tauri/gen/

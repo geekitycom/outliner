@@ -1,0 +1,77 @@
+{
+  "name": "@andrewshell/outliner",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "description": "A JavaScript outliner forked from Concord.",
+  "keywords": [
+    "outliner",
+    "opml",
+    "concord",
+    "typescript",
+    "editor"
+  ],
+  "homepage": "https://github.com/geekitycom/outliner#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/geekitycom/outliner.git",
+    "directory": "packages/outliner"
+  },
+  "bugs": {
+    "url": "https://github.com/geekitycom/outliner/issues"
+  },
+  "main": "./dist/outliner.js",
+  "module": "./dist/outliner.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/outliner.global.js",
+  "jsdelivr": "./dist/outliner.global.js",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    },
+    "./global": "./dist/outliner.global.js",
+    "./compat-global": "./dist/outliner.compat.global.js",
+    "./styles.css": "./src/styles.css"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/outliner.js"
+      },
+      "./global": "./dist/outliner.global.js",
+      "./compat-global": "./dist/outliner.compat.global.js",
+      "./styles.css": "./dist/outliner.css"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE.txt"
+  ],
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "pnpm run build:lib",
+    "build:lib": "vite build -c vite.lib.config.ts && vite build -c vite.compat.config.ts && tsc -p tsconfig.build.json",
+    "build:demo": "vite build --outDir dist-demo",
+    "preview": "pnpm run build:demo && vite preview --outDir dist-demo",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test",
+    "prepack": "pnpm run build"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "jquery": "^4.0.0",
+    "jsdom": "^29.1.1",
+    "sirv-cli": "^3.0.1",
+    "typescript": "^5.6.3",
+    "vite": "^8.1.4",
+    "vitest": "^4.1.10"
+  }
+}

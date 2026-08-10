@@ -1,1 +1,2 @@
-npm test
+pnpm typecheck
+pnpm test
