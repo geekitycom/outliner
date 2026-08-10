@@ -12,16 +12,22 @@ would churn the scripts for no benefit.
 
 ## Icon
 
-`geekity_icon.png` in this directory is the source image; the generated icon set under
-`src-tauri/icons/` comes from `pnpm exec tauri icon geekity_icon.png`. Re-run that after
-replacing the source. Two things worth knowing about the current source:
+`geekity_icon.svg` in this directory is the icon source; the set under `src-tauri/icons/` is
+generated from it with `pnpm exec tauri icon geekity_icon.svg`. Re-run that after changing the
+source, and delete the `android/` and `ios/` directories it also emits — this app has no mobile
+target.
 
-- It's **300×300**, below the 1024×1024 macOS wants, so the large Retina sizes are upscaled and
-  slightly soft. The mark is simple hard-edged geometry so it holds up better than a detailed
-  image would, but a 1024px or vector original would render crisply.
-- It's a **black glyph on transparency**, with no background plate. Against a dark Dock or in
-  dark mode it has very little contrast — most macOS app icons fill the rounded-square canvas
-  rather than sitting transparent on it.
+**Generate from the SVG, not the PNG.** `geekity_icon.png` is kept alongside it as the original
+raster, but it's only 300×300 — below the 1024×1024 macOS wants — so generating from it upscales
+every large Retina size. `tauri icon` accepts SVG directly and rasterizes each size from the
+vector, which is why `icon.icns` carries a genuine 1024×1024 representation (verify with
+`iconutil --convert iconset`).
+
+One property of the artwork worth a deliberate decision: it's a **black glyph on transparency**
+with no background plate, so against a dark Dock or in dark mode it has very little contrast.
+Most macOS app icons fill the rounded-square canvas rather than sitting transparent on it. Left
+as-is because that's a branding call, not a technical one — `tauri icon` can composite a
+background via its manifest form (`{ "default": ..., "bg_color": "#fff" }`) if that changes.
 
 ## Running and building
 
