@@ -12,7 +12,7 @@ GPL-3.0, same as the upstream project. See `LICENSE.txt`.
 packages/
   outliner/    @andrewshell/outliner — the library, its demo, unit tests, and e2e suite
 apps/
-               desktop apps that consume the component (Tauri)
+  desktop/     Outliner — a Tauri desktop app that wraps the component (see apps/desktop/README.md)
 ```
 
 ## Getting started
@@ -47,13 +47,26 @@ pnpm --filter @andrewshell/outliner test:e2e
 - **Releases**: release-please watches `packages/outliner` only and tags as `v<version>`.
   Apps are private and are not part of that flow.
 
-## Adding a Tauri app
+## Desktop app
 
-Scaffold into `apps/`, then wire it up:
+`apps/desktop` (package name `outliner-desktop`, product name **Outliner**) is a Tauri v2
+app that mounts `@andrewshell/outliner` full-window, with a native menu bar for file
+operations. See `apps/desktop/README.md` for what it does and its design notes.
 
 ```bash
-cd apps && pnpm create tauri-app
+pnpm dev:desktop                                    # run it (opens a native window)
+pnpm --filter outliner-desktop tauri build           # bundle a distributable .app / .dmg / etc.
 ```
+
+Building and bundling the app requires the [Rust toolchain](https://rustup.rs) (plus the
+usual Tauri OS-level prerequisites — see the
+[Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/)); `pnpm dev`/`pnpm build`
+at the root and `pnpm --filter outliner-desktop typecheck` only touch the TypeScript
+frontend and don't need Rust installed.
+
+### Adding a second app
+
+The same shape works for another app in `apps/`:
 
 - Add `"@andrewshell/outliner": "workspace:*"` to its dependencies — the explicit
   `workspace:` protocol is what guarantees the local link, since pnpm 10 defaults

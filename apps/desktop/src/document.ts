@@ -60,6 +60,28 @@ export function initDocument(instance: Outliner): void {
     // queueMicrotask — by the time it runs, the op (and its own
     // markChanged() call, if any) has already happened.
     opKeystroke: () => queueMicrotask(syncTitle),
+
+    // Mouse-driven expand/collapse (double-click a bullet, or a single
+    // click in readonly mode) goes through op.ts's expand()/collapse(),
+    // which fires this callback *before* the class mutation and before its
+    // own markChanged() call — same ordering as opKeystroke above, so the
+    // same queueMicrotask deferral is required (verified in op.ts, not
+    // assumed).
+    opExpand: () => queueMicrotask(syncTitle),
+    opCollapse: () => queueMicrotask(syncTitle),
+
+    // Deliberately NOT wiring opReorg here: verified in events.ts that a
+    // mouse drag-reorder never calls op.reorg() at all — the `mouseup`
+    // handler splices the DOM nodes directly and calls
+    // editor.dragModeExit(), which sets the changed flag itself but fires
+    // no callback. opReorg only fires for *keyboard*-driven reorganize
+    // (Cmd-arrows, see keyboard.ts), which is already covered by
+    // opKeystroke above, so wiring it would be dead code for the mouse
+    // case this fix targets — the real fix for mouse drag is the `mouseup`
+    // listener below.
+    //
+    // Deliberately NOT wiring opHover: it fires on every mousemove over a
+    // headline, which would turn every hover into a title-bar write.
   })
 
   // markChanged() is only called by structural operations in op.ts — plain
@@ -69,6 +91,18 @@ export function initDocument(instance: Outliner): void {
     outliner.markChanged()
     syncTitle()
   })
+
+  // Mouse drag-reorder sets the changed flag via editor.dragModeExit() (see
+  // the opReorg note above) but fires no callback to observe it. Catch it
+  // with our own `mouseup` listener instead: `container` is a strict
+  // ancestor of the library's `root` <ol> (outliner.ts creates `root`
+  // inside `container`), so a bubbled `mouseup` here always runs *after*
+  // the library's own root-level `mouseup` handler — including its call to
+  // dragModeExit() — which means markChanged() has already completed by
+  // the time syncTitle() below reads hasChanged(). No queueMicrotask
+  // needed. Firing on every mouseup (not just drags) is harmless: syncTitle
+  // is cheap and idempotent when nothing changed.
+  outliner.container.addEventListener('mouseup', () => syncTitle())
 
   currentPath = null
   outliner.loadOpml(EMPTY_OPML)
