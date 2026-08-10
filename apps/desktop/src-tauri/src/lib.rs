@@ -153,66 +153,77 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
   let shortcuts_item = MenuItemBuilder::with_id("keyboard-shortcuts", "Keyboard Shortcuts").build(app)?;
   let help_submenu = SubmenuBuilder::new(app, "Help").item(&shortcuts_item).build()?;
 
-  // Modeled on classic Mac MORE's View menu, minus its chart items — this
-  // app has no chart view, so those are out of scope. Grouped the way MORE
-  // grouped them: expand/collapse granularity, then whole-document ops,
-  // then the hoist stack.
+  // Modeled on Dave Winer's Drummer (drummer.land) Outliner menu, not
+  // classic Mac MORE's View menu this used to mirror. Grouped the way
+  // Drummer groups them: expand/collapse granularity, then the hoist
+  // stack, then find.
   //
-  // Only Expand All gets an accelerator. Everything else here is
-  // menu-only, on purpose, even though MORE gives several of these items
-  // one:
-  //   - Expand Subheads / Collapse Subheads: MORE uses Cmd-, and Cmd-.
-  //     respectively, but Cmd-, is already bound to `toggle-expand` in
-  //     CONCORD_KEYSTROKES (packages/outliner/src/util.ts) — an accelerator
-  //     here would shadow that existing outliner keystroke, so neither
-  //     item gets one.
-  //   - Hoist / De-Hoist: MORE uses Cmd-H and Cmd--, but Cmd-H is Hide
+  // Find… and Find again are the only items here with accelerators
+  // (CmdOrCtrl+F / CmdOrCtrl+G) — everything else is menu-only, on purpose,
+  // even though MORE (and, for some of these, Drummer too) gives several
+  // of these items one:
+  //   - Expand / Collapse (formerly "Expand Subheads" / "Collapse
+  //     Subheads"): MORE uses Cmd-, and Cmd-. respectively, but Cmd-, is
+  //     already bound to `toggle-expand` in CONCORD_KEYSTROKES
+  //     (packages/outliner/src/util.ts) — an accelerator here would shadow
+  //     that existing outliner keystroke, so neither item gets one.
+  //   - Hoist / Dehoist: MORE uses Cmd-H and Cmd--, but Cmd-H is Hide
   //     Application on modern macOS and already does that job in the
   //     Outliner app menu above — reusing it here would be ambiguous, so
-  //     neither Hoist nor De-Hoist gets an accelerator either.
-  let expand_subheads_item = MenuItemBuilder::with_id("expand-subheads", "Expand Subheads").build(app)?;
-  let collapse_subheads_item = MenuItemBuilder::with_id("collapse-subheads", "Collapse Subheads").build(app)?;
-  let expand_to_item = MenuItemBuilder::with_id("expand-to", "Expand To…").build(app)?;
-  // Cmd-E is free: it's absent from CONCORD_KEYSTROKES
-  // (packages/outliner/src/util.ts), so the outliner's keydown handler
-  // never preventDefaults it and this accelerator shadows nothing.
-  let expand_all_item = MenuItemBuilder::with_id("expand-all", "Expand All")
-    .accelerator("CmdOrCtrl+E")
-    .build(app)?;
-  let expand_document_item = MenuItemBuilder::with_id("expand-document", "Expand Document").build(app)?;
-  let collapse_document_item = MenuItemBuilder::with_id("collapse-document", "Collapse Document").build(app)?;
-  let full_view_item = MenuItemBuilder::with_id("full-view", "Full View").build(app)?;
+  //     neither Hoist nor Dehoist gets an accelerator either.
+  //   - Expand All Subs (formerly "Expand All") no longer gets Cmd-E, which
+  //     the old MORE-modeled menu assigned it: Drummer's own Outliner menu
+  //     gives this item no accelerator at all, and mirroring Drummer means
+  //     mirroring its restraint here too.
+  //
+  // Cmd-F and Cmd-G are safe: Cmd-F (`meta-F`) maps to `find` in
+  // CONCORD_KEYSTROKES (packages/outliner/src/util.ts), but
+  // keyboard.ts's `case 'find': break` is a no-op that never calls
+  // preventDefault — so the accelerator was already free, and is now
+  // backed by a real implementation (find.ts). Cmd-G (`meta-G`) is absent
+  // from CONCORD_KEYSTROKES entirely, so it shadows nothing either.
+  let expand_item = MenuItemBuilder::with_id("expand", "Expand").build(app)?;
+  let expand_all_subs_item = MenuItemBuilder::with_id("expand-all-subs", "Expand All Subs").build(app)?;
+  let expand_everything_item = MenuItemBuilder::with_id("expand-everything", "Expand Everything").build(app)?;
+  let collapse_item = MenuItemBuilder::with_id("collapse", "Collapse").build(app)?;
+  let collapse_everything_item =
+    MenuItemBuilder::with_id("collapse-everything", "Collapse Everything").build(app)?;
   let hoist_item = MenuItemBuilder::with_id("hoist", "Hoist").build(app)?;
-  let de_hoist_item = MenuItemBuilder::with_id("de-hoist", "De-Hoist").build(app)?;
-  let de_hoist_all_item = MenuItemBuilder::with_id("de-hoist-all", "De-Hoist All").build(app)?;
+  let dehoist_item = MenuItemBuilder::with_id("dehoist", "Dehoist").build(app)?;
+  let find_item = MenuItemBuilder::with_id("find", "Find…")
+    .accelerator("CmdOrCtrl+F")
+    .build(app)?;
+  let find_again_item = MenuItemBuilder::with_id("find-again", "Find again")
+    .accelerator("CmdOrCtrl+G")
+    .build(app)?;
 
-  // MORE greys out items that don't apply to the current state (e.g.
-  // De-Hoist when nothing is hoisted). Reproducing that here would need a
+  // Drummer greys out items that don't apply to the current state (e.g.
+  // Dehoist when nothing is hoisted). Reproducing that here would need a
   // frontend round trip on every cursor move just to ask "is isHoisted()
-  // true right now" — skipped. hoist()/deHoist()/deHoistAll() already
-  // return false harmlessly when they don't apply (see their doc comments
-  // in packages/outliner/src/outliner.ts), so clicking a greyed-out-in-MORE
+  // true right now" — skipped. hoist()/deHoist() already return false
+  // harmlessly when they don't apply (see their doc comments in
+  // packages/outliner/src/outliner.ts), so clicking a greyed-out-in-Drummer
   // item here is a harmless no-op instead.
-  let view_submenu = SubmenuBuilder::new(app, "View")
-    .item(&expand_subheads_item)
-    .item(&collapse_subheads_item)
-    .item(&expand_to_item)
-    .item(&expand_all_item)
+  let outliner_submenu = SubmenuBuilder::new(app, "Outliner")
+    .item(&expand_item)
+    .item(&expand_all_subs_item)
+    .item(&expand_everything_item)
     .separator()
-    .item(&expand_document_item)
-    .item(&collapse_document_item)
-    .item(&full_view_item)
+    .item(&collapse_item)
+    .item(&collapse_everything_item)
     .separator()
     .item(&hoist_item)
-    .item(&de_hoist_item)
-    .item(&de_hoist_all_item)
+    .item(&dehoist_item)
+    .separator()
+    .item(&find_item)
+    .item(&find_again_item)
     .build()?;
 
   MenuBuilder::new(app)
     .item(&app_submenu)
     .item(&file_submenu)
     .item(&edit_submenu)
-    .item(&view_submenu)
+    .item(&outliner_submenu)
     .item(&help_submenu)
     .build()
 }
@@ -274,38 +285,36 @@ pub fn run() {
           "keyboard-shortcuts" => {
             let _ = app.emit_to(label, "menu-keyboard-shortcuts", ());
           }
-          // View menu — same routing rationale as above: these read/mutate
-          // one document's outliner state (expansion, hoist stack), so they
-          // must land on just the focused window's label, never broadcast.
-          "expand-subheads" => {
-            let _ = app.emit_to(label, "menu-expand-subheads", ());
+          // Outliner menu — same routing rationale as above: these
+          // read/mutate one document's outliner state (expansion, hoist
+          // stack, search), so they must land on just the focused window's
+          // label, never broadcast.
+          "expand" => {
+            let _ = app.emit_to(label, "menu-expand", ());
           }
-          "collapse-subheads" => {
-            let _ = app.emit_to(label, "menu-collapse-subheads", ());
+          "expand-all-subs" => {
+            let _ = app.emit_to(label, "menu-expand-all-subs", ());
           }
-          "expand-to" => {
-            let _ = app.emit_to(label, "menu-expand-to", ());
+          "expand-everything" => {
+            let _ = app.emit_to(label, "menu-expand-everything", ());
           }
-          "expand-all" => {
-            let _ = app.emit_to(label, "menu-expand-all", ());
+          "collapse" => {
+            let _ = app.emit_to(label, "menu-collapse", ());
           }
-          "expand-document" => {
-            let _ = app.emit_to(label, "menu-expand-document", ());
-          }
-          "collapse-document" => {
-            let _ = app.emit_to(label, "menu-collapse-document", ());
-          }
-          "full-view" => {
-            let _ = app.emit_to(label, "menu-full-view", ());
+          "collapse-everything" => {
+            let _ = app.emit_to(label, "menu-collapse-everything", ());
           }
           "hoist" => {
             let _ = app.emit_to(label, "menu-hoist", ());
           }
-          "de-hoist" => {
-            let _ = app.emit_to(label, "menu-de-hoist", ());
+          "dehoist" => {
+            let _ = app.emit_to(label, "menu-dehoist", ());
           }
-          "de-hoist-all" => {
-            let _ = app.emit_to(label, "menu-de-hoist-all", ());
+          "find" => {
+            let _ = app.emit_to(label, "menu-find", ());
+          }
+          "find-again" => {
+            let _ = app.emit_to(label, "menu-find-again", ());
           }
           _ => {}
         }

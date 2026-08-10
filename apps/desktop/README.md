@@ -62,30 +62,35 @@ is needed to keep multiple documents' state apart.
 - **File** — New, Open…, Save, Save As…, Close Window (see above).
 - **Edit** — Cut, Copy, Paste only. See "Design notes" below for why Undo and Select All are
   deliberately absent.
-- **View** — modeled on classic Mac MORE's View menu, minus its chart items (this app has no
-  chart view, so those are out of scope):
-  - **Expand Subheads** / **Collapse Subheads** (no accelerators) — expand/collapse the cursor
-    headline's children one level.
-  - **Expand To…** (no accelerator) — prompts for a level number (an in-app modal, not
-    `window.prompt`) and calls `expandToLevel(n)`: 1 = top-level headlines only, 2 = top-level
-    plus their immediate children, and so on.
-  - **Expand All** (`Cmd/Ctrl-E`) — fully expands the cursor headline's subtree.
-  - **Expand Document** / **Collapse Document** (no accelerators) — expand/collapse the entire
-    document.
-  - **Full View** (no accelerator) — de-hoists all the way out, then expands the whole document.
-  - **Hoist** / **De-Hoist** / **De-Hoist All** (no accelerators) — zoom the view onto the cursor
-    headline's subtree, pop one level, or return to the real root. See the "Hoisting" section of
-    `packages/outliner/README.md` for exact semantics.
+- **Outliner** — modeled on Dave Winer's Drummer (drummer.land) Outliner menu:
+  - **Expand** / **Collapse** (no accelerators) — expand/collapse the cursor headline's children
+    one level.
+  - **Expand All Subs** (no accelerator) — fully expands the cursor headline's subtree.
+  - **Expand Everything** / **Collapse Everything** (no accelerators) — expand/collapse the
+    entire document.
+  - **Hoist** / **Dehoist** (no accelerators) — zoom the view onto the cursor headline's subtree,
+    or pop one level back out. See the "Hoisting" section of `packages/outliner/README.md` for
+    exact semantics.
+  - **Find…** (`Cmd/Ctrl-F`) — prompts for search text and an optional "Match case" checkbox (an
+    in-app modal, not `window.prompt`), then calls `find(text, { matchCase })`. A search that
+    matches nothing reports "No match found" instead of failing silently.
+  - **Find again** (`Cmd/Ctrl-G`) — repeats the last search via `findAgain()`. If Find… hasn't
+    been run yet in this window, it opens the Find… prompt instead, since there's nothing to
+    repeat.
 
-  Several of these accelerators are deliberately absent even though MORE assigns them:
-  - Expand Subheads / Collapse Subheads skip MORE's `Cmd-,` / `Cmd-.` because `Cmd-,` is already
-    bound to the outliner's own `toggle-expand` (`CONCORD_KEYSTROKES` in
-    `packages/outliner/src/util.ts`); a menu accelerator here would shadow that keystroke.
-  - Hoist / De-Hoist skip MORE's `Cmd-H` / `Cmd--` because `Cmd-H` is Hide Application on modern
-    macOS and already does that job in the Outliner app menu.
+  Only Find…/Find again get accelerators; every other item here is menu-only, even though MORE
+  (which the old View menu mirrored) gave several of these items one, and Drummer itself omits
+  them too:
+  - Expand / Collapse skip `Cmd-,` / `Cmd-.` because `Cmd-,` is already bound to the outliner's
+    own `toggle-expand` (`CONCORD_KEYSTROKES` in `packages/outliner/src/util.ts`); a menu
+    accelerator here would shadow that keystroke.
+  - Hoist / Dehoist skip `Cmd-H` / `Cmd--` because `Cmd-H` is Hide Application on modern macOS
+    and already does that job in the Outliner app menu.
 
-  `Cmd-E` (Expand All) is unused elsewhere and was verified against `CONCORD_KEYSTROKES` before
-  being assigned.
+  `Cmd-F` and `Cmd-G` were verified against `CONCORD_KEYSTROKES` before being assigned: `Cmd-F`
+  (`meta-F`) maps to `find` there, but `keyboard.ts`'s `case 'find': break` is a no-op that never
+  calls `preventDefault`, so the accelerator was free and is now backed by a real
+  implementation; `Cmd-G` is absent from the table entirely.
 - **Help** — Keyboard Shortcuts (no accelerator; opens the shortcuts modal).
 
 ## Design notes
@@ -177,9 +182,8 @@ themselves (`dialog:default` in `capabilities/default.json`, i.e. `allow-message
   app can't yet be launched (or handed a file) by double-clicking an `.opml` file in Finder.
 - Help → Keyboard Shortcuts has no keyboard accelerator of its own. The conventional `Cmd-/`
   is already bound to the outliner's `run-selection`, and a menu accelerator would shadow it.
-- View menu items are never greyed out based on document state (e.g. De-Hoist when nothing is
-  hoisted, the way MORE greys it out). Keeping that in sync would need a frontend→Rust round
+- Outliner menu items are never greyed out based on document state (e.g. Dehoist when nothing is
+  hoisted, the way Drummer greys it out). Keeping that in sync would need a frontend→Rust round
   trip on every cursor move just to answer "does this apply right now" — skipped. The underlying
-  library methods (`hoist`/`deHoist`/`deHoistAll`) already return `false` harmlessly when they
-  don't apply, so clicking one of these when it doesn't make sense is a no-op rather than an
-  error.
+  library methods (`hoist`/`deHoist`) already return `false` harmlessly when they don't apply, so
+  clicking one of these when it doesn't make sense is a no-op rather than an error.

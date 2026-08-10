@@ -66,7 +66,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
     ],
   },
   {
-    title: 'View',
+    title: 'Outliner',
     shortcuts: [{ keys: ['Cmd', ','], description: "Expand or collapse the headline's children" }],
   },
   {
