@@ -1,9 +1,27 @@
-# Outliner (desktop)
+# GeekityFlow (desktop)
 
-A Tauri v2 desktop app (package name `outliner-desktop`, identifier `com.geekity.outliner`)
-that mounts `@andrewshell/outliner` full-window. It's chrome-free — no toolbar — because the
-outliner is keyboard-driven; everything that would be a toolbar button is a menu item or a
-keystroke instead. **Help → Keyboard Shortcuts** opens an in-app modal listing them.
+**GeekityFlow** is a Tauri v2 desktop app (workspace package `outliner-desktop`, bundle
+identifier `com.geekity.flow`) that mounts `@andrewshell/outliner` full-window. It's
+chrome-free — no toolbar — because the outliner is keyboard-driven; everything that would be a
+toolbar button is a menu item or a keystroke instead. **Help → Keyboard Shortcuts** opens an
+in-app modal listing them.
+
+The workspace package name stays `outliner-desktop` (and the directory `apps/desktop`) — those
+are internal identifiers used by `pnpm --filter` and CI, not user-visible, so renaming them
+would churn the scripts for no benefit.
+
+## Icon
+
+`geekity_icon.png` in this directory is the source image; the generated icon set under
+`src-tauri/icons/` comes from `pnpm exec tauri icon geekity_icon.png`. Re-run that after
+replacing the source. Two things worth knowing about the current source:
+
+- It's **300×300**, below the 1024×1024 macOS wants, so the large Retina sizes are upscaled and
+  slightly soft. The mark is simple hard-edged geometry so it holds up better than a detailed
+  image would, but a 1024px or vector original would render crisply.
+- It's a **black glyph on transparency**, with no background plate. Against a dark Dock or in
+  dark mode it has very little contrast — most macOS app icons fill the rounded-square canvas
+  rather than sitting transparent on it.
 
 ## Running and building
 
@@ -66,7 +84,7 @@ is needed to keep multiple documents' state apart.
 
 ## Menu layout
 
-- **Outliner** (macOS app menu) — About, Services, Hide/Hide Others/Show All (all predefined),
+- **GeekityFlow** (macOS app menu) — About, Services, Hide/Hide Others/Show All (all predefined),
   and Quit (`Cmd/Ctrl-Q`, deliberately a *custom* item, not predefined — see "Design notes" below
   for why).
 - **File** — New, Open…, Save, Save As…, Close Window (see above).
@@ -95,7 +113,7 @@ is needed to keep multiple documents' state apart.
     own `toggle-expand` (`CONCORD_KEYSTROKES` in `packages/outliner/src/util.ts`); a menu
     accelerator here would shadow that keystroke.
   - Hoist / Dehoist skip `Cmd-H` / `Cmd--` because `Cmd-H` is Hide Application on modern macOS
-    and already does that job in the Outliner app menu.
+    and already does that job in the GeekityFlow app menu.
 
   `Cmd-F` and `Cmd-G` were verified against `CONCORD_KEYSTROKES` before being assigned: `Cmd-F`
   (`meta-F`) maps to `find` there, but `keyboard.ts`'s `case 'find': break` is a no-op that never
@@ -179,7 +197,7 @@ doesn't cover. `capabilities/default.json` shipped with `"windows": ["main"]` (t
 from `tauri init`, written when the app was single-window). Once multi-window landed, every
 Rust-created window — labelled `win-1`, `win-2`, ... — matched no capability at all and so had
 *no* permissions: `setTitle()` was denied (the window title stayed stuck on the literal
-"Outliner" set by `WebviewWindowBuilder`), `destroy()` was denied, the dialog pickers were
+"GeekityFlow" set by `WebviewWindowBuilder`), `destroy()` was denied, the dialog pickers were
 denied, and `listen()` was denied, which silently killed the **entire menu** in every window
 but the first. The giveaway that this was permissions rather than logic: `read_file` and
 `write_file` kept working, because app-defined commands aren't ACL-gated — so an opened

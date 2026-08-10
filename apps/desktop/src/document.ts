@@ -45,7 +45,7 @@ function parseOpml(text: string): Document {
  */
 export async function reportError(action: string, path: string, err: unknown): Promise<void> {
   await message(`Could not ${action} "${basename(path)}": ${String(err)}`, {
-    title: 'Outliner',
+    title: 'GeekityFlow',
     kind: 'error',
   })
 }
@@ -59,7 +59,7 @@ let lastSentDirty: boolean | null = null
 
 function syncTitle(): void {
   const dirty = isDirty()
-  const base = currentPath ? basename(currentPath) : 'Untitled — Outliner'
+  const base = currentPath ? basename(currentPath) : 'Untitled — GeekityFlow'
   const title = dirty ? `• ${base}` : base
   // setTitle() needs its own core:window:allow-set-title grant (core:default
   // only covers read-only window commands) — if that permission ever

@@ -183,7 +183,7 @@ fn create_document_window(app: &tauri::AppHandle, path: Option<&str>) -> tauri::
     None => "index.html".to_string(),
   };
   WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
-    .title("Outliner")
+    .title("GeekityFlow")
     .inner_size(900.0, 700.0)
     .build()?;
   Ok(())
@@ -219,11 +219,11 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
   // other custom item here, which is what keeps Cmd-Q inside code this app
   // controls. Do not "simplify" this back to `.quit()` — see the "Quit"
   // design note in README.md first.
-  let quit_item = MenuItemBuilder::with_id("quit", "Quit Outliner")
+  let quit_item = MenuItemBuilder::with_id("quit", "Quit GeekityFlow")
     .accelerator("CmdOrCtrl+Q")
     .build(app)?;
 
-  let app_submenu = SubmenuBuilder::new(app, "Outliner")
+  let app_submenu = SubmenuBuilder::new(app, "GeekityFlow")
     .about(None)
     .separator()
     .services()
@@ -302,7 +302,7 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
   //     that existing outliner keystroke, so neither item gets one.
   //   - Hoist / Dehoist: MORE uses Cmd-H and Cmd--, but Cmd-H is Hide
   //     Application on modern macOS and already does that job in the
-  //     Outliner app menu above — reusing it here would be ambiguous, so
+  //     GeekityFlow app menu above — reusing it here would be ambiguous, so
   //     neither Hoist nor Dehoist gets an accelerator either.
   //   - Expand All Subs (formerly "Expand All") no longer gets Cmd-E, which
   //     the old MORE-modeled menu assigned it: Drummer's own Outliner menu

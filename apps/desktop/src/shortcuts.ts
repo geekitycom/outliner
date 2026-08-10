@@ -66,7 +66,7 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
     ],
   },
   {
-    title: 'Outliner',
+    title: 'GeekityFlow',
     shortcuts: [{ keys: ['Cmd', ','], description: "Expand or collapse the headline's children" }],
   },
   {

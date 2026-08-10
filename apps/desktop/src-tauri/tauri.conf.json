@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Outliner",
+  "productName": "GeekityFlow",
   "version": "0.1.0",
-  "identifier": "com.geekity.outliner",
+  "identifier": "com.geekity.flow",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Outliner",
+        "title": "GeekityFlow",
         "width": 900,
         "height": 700,
         "resizable": true,

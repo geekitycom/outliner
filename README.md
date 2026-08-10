@@ -12,7 +12,7 @@ GPL-3.0, same as the upstream project. See `LICENSE.txt`.
 packages/
   outliner/    @andrewshell/outliner — the library, its demo, unit tests, and e2e suite
 apps/
-  desktop/     Outliner — a Tauri desktop app that wraps the component (see apps/desktop/README.md)
+  desktop/     GeekityFlow — a Tauri desktop app that wraps the component (see apps/desktop/README.md)
 ```
 
 ## Getting started
@@ -49,7 +49,7 @@ pnpm --filter @andrewshell/outliner test:e2e
 
 ## Desktop app
 
-`apps/desktop` (package name `outliner-desktop`, product name **Outliner**) is a Tauri v2
+`apps/desktop` (package name `outliner-desktop`, product name **GeekityFlow**) is a Tauri v2
 app that mounts `@andrewshell/outliner` full-window, with a native menu bar for file
 operations. See `apps/desktop/README.md` for what it does and its design notes.
 

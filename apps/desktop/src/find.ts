@@ -79,7 +79,7 @@ function buildContent(): { form: HTMLElement; input: HTMLInputElement; matchCase
  * a failure.
  */
 async function notFound(text: string): Promise<void> {
-  await message(`No match found for "${text}".`, { title: 'Outliner', kind: 'info' })
+  await message(`No match found for "${text}".`, { title: 'GeekityFlow', kind: 'info' })
 }
 
 /**
