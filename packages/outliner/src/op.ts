@@ -1,7 +1,7 @@
 // The operations layer. Ported from Concord's ConcordOp. Every method acts on
 // the live bar cursor (`.concord-cursor`).
 import type { Outliner } from './outliner'
-import type { Direction, OpmlHeaders } from './types'
+import type { Direction, FindOptions, OpmlHeaders } from './types'
 import { UP, DOWN, LEFT, RIGHT, FLATUP, FLATDOWN } from './constants'
 import { NodeAttributes } from './attributes'
 import { NodeRef } from './noderef'
@@ -37,9 +37,17 @@ interface HoistFrame {
   stash: DocumentFragment
 }
 
+/** The remembered parameters of the last `find()`, so `findAgain()` can repeat it. */
+interface SearchState {
+  text: string
+  matchCase: boolean
+  wrap: boolean
+}
+
 export class Op {
   attributes: NodeAttributes
   private hoistStack: HoistFrame[] = []
+  private lastSearch: SearchState | null = null
 
   constructor(private o: Outliner) {
     this.attributes = new NodeAttributes(o, () => this.getCursor())
@@ -393,6 +401,116 @@ export class Op {
 
   hoistDepth(): number {
     return this.hoistStack.length
+  }
+
+  // --- find / find-again ------------------------------------------------------
+  //
+  // Search order is *document* order, not raw DOM sibling order: from a node,
+  // first its own children (regardless of collapsed state — see below), then
+  // `_walk_down` to the next sibling-or-ancestor's-sibling. That is the same
+  // shape of walk `outlineToXml()` uses to build `expansionState`, except that
+  // walk deliberately does *not* descend into a collapsed node's children
+  // (it's recording what's visible), while find deliberately *does* — a
+  // collapsed subtree can still contain the headline the user is looking for,
+  // and refusing to search it would be surprising. When a match is found
+  // inside one, its collapsed ancestors are expanded so the cursor is
+  // actually visible afterwards (see `_reveal`).
+  //
+  // Because this walk only ever reaches nodes still attached under `root`,
+  // hoisting participates for free: displaced subtrees are detached DOM (see
+  // `applyHoist`), so they're simply unreachable from here. Find and
+  // find-again therefore search only the current hoisted view, never the
+  // stashed-away parts of the document -- consistent with the user having
+  // deliberately narrowed focus by hoisting -- and can never land the cursor
+  // on a detached node.
+  //
+  // Dirty-marking: a search that finds nothing must never mark the document
+  // changed -- it read-only inspects headline text. A search that *does* find
+  // a match, though, may need to expand one or more collapsed ancestors to
+  // make the match visible, and expansion state is itself persisted (OPML
+  // `<head><expansionState>`), exactly like `expand()`. So `find`/`findAgain`
+  // mark the document changed if and only if revealing the match actually
+  // expanded something -- never on a failed search, and never when the match
+  // was already visible.
+
+  /** Document-order successor of `node`, descending into children (collapsed or not) before moving on. */
+  private _searchNext(node: HTMLLIElement): HTMLLIElement | null {
+    const kids = childNodes(node)
+    if (kids.length > 0) return kids[0]
+    return this._walk_down(node)
+  }
+
+  /** Expand any collapsed ancestors of `node` and move the cursor there. */
+  private _reveal(node: HTMLLIElement): void {
+    let expanded = false
+    for (const ancestor of nodeParents(node)) {
+      if (ancestor.classList.contains('collapsed')) {
+        ancestor.classList.remove('collapsed')
+        expanded = true
+      }
+    }
+    this.setCursor(node)
+    this.focusCursor()
+    if (expanded) this.markChanged()
+  }
+
+  private _matches(node: HTMLLIElement, needle: string, matchCase: boolean): boolean {
+    const text = textOf(node)?.textContent ?? ''
+    return (matchCase ? text : text.toLowerCase()).includes(needle)
+  }
+
+  private _search(text: string, matchCase: boolean, wrap: boolean): boolean {
+    const needle = matchCase ? text : text.toLowerCase()
+    const start = this.getCursor()
+
+    let node = start ? this._searchNext(start) : (this.root.querySelector('.concord-node') as HTMLLIElement | null)
+    while (node) {
+      if (this._matches(node, needle, matchCase)) {
+        this._reveal(node)
+        return true
+      }
+      node = this._searchNext(node)
+    }
+
+    if (wrap) {
+      let wrapped = this.root.querySelector('.concord-node') as HTMLLIElement | null
+      while (wrapped && wrapped !== start) {
+        if (this._matches(wrapped, needle, matchCase)) {
+          this._reveal(wrapped)
+          return true
+        }
+        wrapped = this._searchNext(wrapped)
+      }
+      // The only match may be the node the search started from -- wrapping
+      // all the way back around should still find it.
+      if (start && this._matches(start, needle, matchCase)) {
+        this._reveal(start)
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
+   * Search headline text starting *after* the current cursor, in document
+   * order (see above), and move the cursor to the first match. Matching is
+   * case-insensitive unless `matchCase` is set. Wraps around to the top after
+   * the last match unless `wrap: false`. Remembers the search (text and
+   * options) so `findAgain()` can repeat it. Returns whether a match was found.
+   */
+  find(text: string, options?: FindOptions): boolean {
+    const matchCase = options?.matchCase ?? false
+    const wrap = options?.wrap ?? true
+    if (!text) return false
+    this.lastSearch = { text, matchCase, wrap }
+    return this._search(text, matchCase, wrap)
+  }
+
+  /** Repeat the last `find()` from the current cursor. False if there's no previous search, or no further match. */
+  findAgain(): boolean {
+    if (!this.lastSearch) return false
+    const { text, matchCase, wrap } = this.lastSearch
+    return this._search(text, matchCase, wrap)
   }
 
   // --- text formatting ------------------------------------------------------

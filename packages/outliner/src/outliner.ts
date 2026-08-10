@@ -2,6 +2,7 @@
 // internals (Editor / Op / Script). One instance per container element.
 import type {
   Direction,
+  FindOptions,
   KeystrokeEvent,
   NodeRef as NodeRefApi,
   OpmlHeaders,
@@ -355,6 +356,33 @@ export class Outliner {
   /** How many levels deep the hoist stack is (0 = not hoisted). */
   hoistDepth(): number {
     return this.op.hoistDepth()
+  }
+
+  // --- find / find-again ------------------------------------------------------
+
+  /**
+   * Search headline text starting after the current cursor, in document
+   * (top-to-bottom, as displayed) order, and move the cursor to the first
+   * match — expanding any collapsed ancestors so it's actually visible.
+   * Case-insensitive unless `matchCase` is set; wraps around to the top after
+   * the last match unless `wrap: false`. Remembers the search so
+   * `findAgain()` can repeat it. Returns whether a match was found.
+   *
+   * Only headlines reachable from the current view are searched: while
+   * hoisted, that's the hoisted subtree, not the whole document (the
+   * displaced parts are detached DOM, same as `toOpml()` treats them as
+   * still-real but temporarily out of view). A match found inside a
+   * *collapsed* subtree, though, is still found -- collapsed nodes stay
+   * attached, just visually hidden -- and finding one marks the document
+   * changed (expansion state is persisted in the OPML), same as `expand()`
+   * would. A search that matches nothing never marks the document changed.
+   */
+  find(text: string, options?: FindOptions): boolean {
+    return this.op.find(text, options)
+  }
+  /** Repeat the last `find()` from the current cursor. Returns false if there's no previous search, or no further match. */
+  findAgain(): boolean {
+    return this.op.findAgain()
   }
 
   // --- formatting -----------------------------------------------------------

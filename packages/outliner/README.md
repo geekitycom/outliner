@@ -152,6 +152,11 @@ outliner.isHoisted(); outliner.hoistDepth()
 outliner.deHoist()                      // pop one level
 outliner.deHoistAll()                   // back to the real root
 
+// find / find-again (like Drummer's Find.../Find again):
+outliner.find('budget')                 // case-insensitive, wraps by default
+outliner.find('Budget', { matchCase: true, wrap: false })
+outliner.findAgain()                    // repeat the last search from the cursor
+
 // per-headline via the cursor handle (classic Concord attribute names):
 outliner.cursor.attributes.setOne('type', 'rss')
 outliner.cursor.getLineText()
@@ -162,7 +167,8 @@ expand/collapse (all-levels/everything/to-a-level), hoist/de-hoist,
 move up/down/left/right, promote/demote,
 insert/insertText/insertImage, bold/italic/strikethrough/link, comments,
 render-mode toggle, undo, cut/copy/paste, OPML import/export, attributes, headers,
-title, `visitAll`/`visitToSummit`, and remote `open`/`save` (now `fetch`-based).
+title, find/find-again, `visitAll`/`visitToSummit`, and remote `open`/`save`
+(now `fetch`-based).
 
 ### Hoisting
 
@@ -183,6 +189,36 @@ made while hoisted writes out the whole outline, not just the hoisted
 subtree. `expandToLevel()` also nests correctly: it always operates on
 whatever's currently at the top of the view (the real root, or the hoisted
 node), the same as `expand()`/`collapse()` do.
+
+### Finding
+
+`find(text, options?)` searches headline **text** (not markup — `<b>`/`<i>`/links
+inside a headline don't get in the way, and don't get matched by tag name either)
+starting *after* the current cursor, moving the cursor to the first match and
+returning whether one was found. Matching is case-insensitive by default;
+`{ matchCase: true }` makes it exact. `{ wrap: false }` stops at the end instead
+of the default wrap-to-the-top behavior. `findAgain()` repeats the last search
+(same text and options) from wherever the cursor is now — `false` if there was
+no previous search, or nothing further matches.
+
+Three behaviors worth knowing:
+
+- **Search order is document order** — a top-to-bottom walk as the outline
+  would read if fully expanded — reusing the same tree-walking helpers
+  (`_walk_down`, `childNodes`) as `outlineToXml()`, not raw DOM sibling order.
+- **A match inside a collapsed subtree is still found**, and finding one
+  expands every collapsed ancestor needed to make it visible before moving the
+  cursor there. Because expansion state is itself persisted in the OPML
+  (`<head><expansionState>`), revealing a match this way marks the document
+  changed — the same rule `expand()` follows. A search that matches nothing
+  never marks the document changed, whether or not it wrapped.
+- **Hoisting narrows what's searched.** Like `outlineToXml()`, `find()` walks
+  from `root`; unlike `outlineToXml()`, it does *not* go through
+  `withFullTree()` first. While hoisted, the displaced parts of the document
+  are detached DOM (see Hoisting above) and simply unreachable from `root`, so
+  `find()`/`findAgain()` only search the current hoisted view — consistent
+  with the user having deliberately narrowed focus — and can never land the
+  cursor on a detached node outside it.
 
 ## Migrating from old Concord
 

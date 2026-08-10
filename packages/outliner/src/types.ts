@@ -90,3 +90,11 @@ export interface OutlinerOptions {
   prefs?: OutlinerPrefs
   callbacks?: OutlinerCallbacks
 }
+
+/** Options accepted by `Outliner.find()`. */
+export interface FindOptions {
+  /** Exact-case matching. Default `false` (case-insensitive). */
+  matchCase?: boolean
+  /** Wrap around to the top after the last match. Default `true`. */
+  wrap?: boolean
+}

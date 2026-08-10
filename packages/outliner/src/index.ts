@@ -23,6 +23,7 @@ export type {
   NodeRef as NodeRefApi,
   NodeAttributesApi,
   KeystrokeEvent,
+  FindOptions,
 } from './types'
 
 import { Outliner } from './outliner'
