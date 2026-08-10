@@ -18,6 +18,6 @@ jobs:
       # x-release-please-version annotation) and CHANGELOG.md; on merge it tags
       # the release and creates a GitHub Release. Config lives in
       # release-please-config.json and .release-please-manifest.json.
-      - uses: googleapis/release-please-action@v4
+      - uses: googleapis/release-please-action@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
