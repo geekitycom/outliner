@@ -95,7 +95,7 @@ is needed to keep multiple documents' state apart.
 
 ## Design notes
 
-Four choices here look like omissions or overengineering but aren't — please don't "fix" them
+Six choices here look like omissions or overengineering but aren't — please don't "fix" them
 without reading this first.
 
 **1. The menu is built in Rust (`build_menu` in `src-tauri/src/lib.rs`), not JS.** It used to be
@@ -163,7 +163,23 @@ already pulled in by `core:default`. The custom `open_path_in_new_window` comman
 same pattern as `read_file`/`write_file` below — an app-defined command, not a plugin command,
 so it isn't ACL-gated at all.
 
-**5. File I/O uses two custom Rust commands (`read_file` / `write_file` in
+**5. A capability has two independent gates: which permissions it grants, and which
+*windows* it applies to.** Granting a permission does nothing for a window the capability
+doesn't cover. `capabilities/default.json` shipped with `"windows": ["main"]` (the default
+from `tauri init`, written when the app was single-window). Once multi-window landed, every
+Rust-created window — labelled `win-1`, `win-2`, ... — matched no capability at all and so had
+*no* permissions: `setTitle()` was denied (the window title stayed stuck on the literal
+"Outliner" set by `WebviewWindowBuilder`), `destroy()` was denied, the dialog pickers were
+denied, and `listen()` was denied, which silently killed the **entire menu** in every window
+but the first. The giveaway that this was permissions rather than logic: `read_file` and
+`write_file` kept working, because app-defined commands aren't ACL-gated — so an opened
+document still displayed its contents and the failure looked purely cosmetic. The `windows`
+field is now a `"*"` glob: every window this app creates is a document window with identical
+needs, and a glob can't drift out of sync with the label scheme in `lib.rs` the way an
+explicit list can. A future window type that genuinely needs *narrower* permissions should get
+its own capability file rather than narrowing this one.
+
+**6. File I/O uses two custom Rust commands (`read_file` / `write_file` in
 `src-tauri/src/lib.rs`) instead of `tauri-plugin-fs`.** `tauri-plugin-fs` scopes filesystem
 access by path pattern declared up front in capabilities. A path the user just picked from the
 native Open/Save dialog isn't in any such scope — there's no way to declare "whatever the user

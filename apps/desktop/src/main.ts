@@ -57,8 +57,13 @@ async function closeWindow(): Promise<void> {
 // window closes. Rust resolves whichever window is focused and emits these
 // events to it specifically (emit_to, not a broadcast emit), so each event
 // always lands on the one document the user is actually looking at.
-// listen()/emit_to() need no extra capability grant: core:event:default is
-// part of core:default, already present in capabilities/default.json.
+// listen() needs no extra *permission* — core:event:default comes with
+// core:default — but it does need the capability to apply to this window at
+// all. capabilities/default.json originally scoped itself to `"windows":
+// ["main"]`, which silently left every Rust-created window (win-1, win-2,
+// ...) with no permissions: listen() was denied, so the whole menu was dead
+// in second and subsequent windows. It's a `"*"` glob now. Permission and
+// window scope are two separate gates; granting one doesn't grant the other.
 void listen('menu-open', () => void openDocument())
 void listen('menu-save', () => void saveDocument())
 void listen('menu-save-as', () => void saveDocumentAs())
