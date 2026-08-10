@@ -522,14 +522,22 @@ pub fn run() {
       // exit would leave the app unquittable.
       if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
         if code.is_none() {
-          let any_dirty = app
-            .state::<DirtyWindows>()
-            .0
-            .lock()
-            .unwrap()
-            .values()
-            .any(|&dirty| dirty);
-          if any_dirty {
+          // Only a dirty window that STILL EXISTS may veto the exit. The
+          // map alone isn't safe to trust here: this fires on the
+          // last-window-closed path, and it would be a bet on Destroyed
+          // being delivered before ExitRequested that the entry for the
+          // window that just closed is already gone. Lose that bet and
+          // prevent_exit() fires with no windows left to prompt in — an
+          // invisible process the user can only end from Activity Monitor,
+          // which is a worse failure than the data loss this whole flow
+          // exists to prevent. Cross-checking against the live window list
+          // makes the outcome independent of that ordering.
+          let dirty_windows = app.state::<DirtyWindows>();
+          let dirty = dirty_windows.0.lock().unwrap();
+          let any_live_dirty = dirty
+            .iter()
+            .any(|(label, &d)| d && app.get_webview_window(label).is_some());
+          if any_live_dirty {
             api.prevent_exit();
           }
         }
