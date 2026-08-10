@@ -1,0 +1,19 @@
+/* Chrome-free, full-height layout: no toolbar, no header, no status bar —
+   the outline fills the window and everything else is a menu item or a
+   keystroke (see the shortcuts modal added in a later commit). */
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+#app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+#app > div {
+  flex: 1;
+  overflow: auto;
+}
