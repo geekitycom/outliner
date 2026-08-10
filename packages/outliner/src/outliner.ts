@@ -307,6 +307,15 @@ export class Outliner {
   collapseEverything(): void {
     this.op.fullCollapse()
   }
+  /**
+   * Collapse everything, then expand so headlines are visible down through
+   * `level` (1-based: 1 = top-level only, 2 = top-level plus their immediate
+   * children, and so on). A level deeper than the outline goes is equivalent
+   * to `expandEverything()`.
+   */
+  expandToLevel(level: number): void {
+    this.op.expandToLevel(level)
+  }
   go(dir: Direction, count?: number, multiple?: boolean): boolean {
     return this.op.go(dir, count, multiple)
   }
@@ -315,6 +324,37 @@ export class Outliner {
   }
   subsExpanded(): boolean {
     return this.op.subsExpanded()
+  }
+
+  // --- hoist ------------------------------------------------------------
+
+  /**
+   * Hoist the view onto the cursor headline, so its subs become the top
+   * level — like zooming into a subtree. Hoists nest (a stack); pop one
+   * level with `deHoist()`, or return to the real root with `deHoistAll()`.
+   * `toOpml()`, `getTitle()`, and `getHeaders()` always reflect the complete
+   * document regardless of hoist state.
+   *
+   * Returns false if there is no cursor, or the cursor has no subs to hoist
+   * into.
+   */
+  hoist(): boolean {
+    return this.op.hoist()
+  }
+  /** Pop one level of hoist. Returns false if not currently hoisted. */
+  deHoist(): boolean {
+    return this.op.deHoist()
+  }
+  /** Return to the real root, popping every level of hoist. Returns false if not currently hoisted. */
+  deHoistAll(): boolean {
+    return this.op.deHoistAll()
+  }
+  isHoisted(): boolean {
+    return this.op.isHoisted()
+  }
+  /** How many levels deep the hoist stack is (0 = not hoisted). */
+  hoistDepth(): number {
+    return this.op.hoistDepth()
   }
 
   // --- formatting -----------------------------------------------------------

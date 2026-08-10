@@ -138,6 +138,7 @@ const outliner = createOutliner(document.getElementById('outliner')!, {
 
 outliner.loadOpml(opmlString)          // OPML -> outline
 outliner.expand(); outliner.collapse()
+outliner.expandToLevel(2)               // collapse everything, then reveal down to level 2
 outliner.reorg(RIGHT)                   // demote the cursor headline
 outliner.promote(); outliner.demote()
 outliner.bold(); outliner.italic(); outliner.link('https://example.com')
@@ -145,16 +146,43 @@ outliner.toggleComment()
 outliner.undo()
 const opml = outliner.toOpml()          // outline -> OPML
 
+// hoist ("zoom in" on a subtree, like MORE's Hoist/De-Hoist):
+outliner.hoist()                        // focus the view on the cursor headline
+outliner.isHoisted(); outliner.hoistDepth()
+outliner.deHoist()                      // pop one level
+outliner.deHoistAll()                   // back to the real root
+
 // per-headline via the cursor handle (classic Concord attribute names):
 outliner.cursor.attributes.setOne('type', 'rss')
 outliner.cursor.getLineText()
 ```
 
 The full command set the original example apps exercised is present:
-expand/collapse (and all-levels/everything), move up/down/left/right, promote/demote,
+expand/collapse (all-levels/everything/to-a-level), hoist/de-hoist,
+move up/down/left/right, promote/demote,
 insert/insertText/insertImage, bold/italic/strikethrough/link, comments,
 render-mode toggle, undo, cut/copy/paste, OPML import/export, attributes, headers,
 title, `visitAll`/`visitToSummit`, and remote `open`/`save` (now `fetch`-based).
+
+### Hoisting
+
+`hoist()` focuses the view on the cursor headline, so its subs become the top
+level — like zooming into a subtree. `deHoist()` pops one level; `deHoistAll()`
+returns to the real root. Hoists nest, so this is a stack (`hoistDepth()` tells
+you how deep). `hoist()` returns `false` when there's no cursor, or the cursor
+has no subs to hoist into; `deHoist()`/`deHoistAll()` return `false` when not
+currently hoisted.
+
+Hoisting is purely a view operation on the live DOM (the displaced part of the
+tree is stashed as detached elements, not round-tripped through OPML), so
+in-place edits made while hoisted — and the collapsed/expanded state and
+cursor position of the parts you can currently see — are preserved exactly
+when you de-hoist. Critically, **`toOpml()`, `getTitle()`, and `getHeaders()`
+always reflect the complete document, regardless of hoist state** — a `save()`
+made while hoisted writes out the whole outline, not just the hoisted
+subtree. `expandToLevel()` also nests correctly: it always operates on
+whatever's currently at the top of the view (the real root, or the hoisted
+node), the same as `expand()`/`collapse()` do.
 
 ## Migrating from old Concord
 

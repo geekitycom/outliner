@@ -23,8 +23,23 @@ function firstNodeParent(el: Element): HTMLLIElement | null {
   return nodeParents(el)[0] ?? null
 }
 
+/**
+ * One level of hoist. `node` is the headline that was hoisted to — it stays
+ * exactly where it was in the real tree (only its children are moved), so
+ * finding it again after de-hoisting requires no bookkeeping beyond this
+ * reference. `stash` holds the direct children `root` had *before* this
+ * hoist, detached but otherwise untouched (never round-tripped through
+ * OPML), so collapsed state, cursor markers, and any DOM the caller is
+ * holding onto all survive intact.
+ */
+interface HoistFrame {
+  node: HTMLLIElement
+  stash: DocumentFragment
+}
+
 export class Op {
   attributes: NodeAttributes
+  private hoistStack: HoistFrame[] = []
 
   constructor(private o: Outliner) {
     this.attributes = new NodeAttributes(o, () => this.getCursor())
@@ -249,6 +264,34 @@ export class Op {
       .forEach((el) => el.classList.remove('collapsed'))
   }
 
+  /**
+   * Collapse everything, then re-expand so headlines are visible down
+   * through `level`. Levels are 1-based and counted from whatever is
+   * currently the top of the view (the real root, or the hoisted node if
+   * hoisted): `expandToLevel(1)` shows only the top-level headlines
+   * (equivalent to `collapseEverything`), `expandToLevel(2)` additionally
+   * reveals their immediate children, and so on. A level deeper than the
+   * outline's actual depth is equivalent to `expandEverything`.
+   */
+  expandToLevel(level: number): void {
+    const nodes = Array.from(
+      this.root.querySelectorAll('.concord-node'),
+    ) as HTMLLIElement[]
+    for (const el of nodes) {
+      if (childNodes(el).length === 0) continue
+      const depth = nodeParents(el).length + 1
+      if (depth < level) el.classList.remove('collapsed')
+      else el.classList.add('collapsed')
+    }
+    const cursor = this.getCursor()
+    if (cursor) {
+      const parents = nodeParents(cursor)
+      const top = parents[parents.length - 1]
+      if (top) this.o.editor.select(top)
+    }
+    this.markChanged()
+  }
+
   subsExpanded(): boolean {
     const node = this.getCursor()
     if (!node) return false
@@ -263,6 +306,93 @@ export class Op {
   level(): number {
     const c = this.getCursor()
     return c ? nodeParents(c).length + 1 : 1
+  }
+
+  // --- hoist ------------------------------------------------------------------
+  //
+  // Hoisting focuses the view on a subtree: `root`'s children are swapped for
+  // the hoisted node's children, so the node's subs become the top level.
+  // Hoists nest (a stack). Critically, this is done by moving the live DOM
+  // nodes aside, not by round-tripping through OPML — that would lose
+  // expansion state and cursor position, and (more importantly) any code that
+  // serializes while hoisted must still see the *complete* document. See
+  // `withFullTree` below, which every OPML/title/header reader is expected to
+  // run through.
+
+  /** Move root's current children into a detached fragment and pull `node`'s children up into root. Pure DOM — no cursor/callback side effects. */
+  private applyHoist(node: HTMLLIElement): HoistFrame {
+    const stash = document.createDocumentFragment()
+    while (this.root.firstChild) stash.appendChild(this.root.firstChild)
+    const ol = childOl(node, true)!
+    while (ol.firstChild) this.root.appendChild(ol.firstChild)
+    return { node, stash }
+  }
+
+  /** Inverse of `applyHoist`: current root children go back under `frame.node`, and the stashed siblings return to root. Pure DOM — no cursor/callback side effects. */
+  private undoHoist(frame: HoistFrame): void {
+    const ol = childOl(frame.node, true)!
+    ol.replaceChildren()
+    while (this.root.firstChild) ol.appendChild(this.root.firstChild)
+    this.root.appendChild(frame.stash)
+  }
+
+  /**
+   * Temporarily restore the real, complete tree (unwinding every hoist level
+   * in the stack) so `fn` can read/serialize the full document, then
+   * re-apply the same hoists (in the same order, against whatever `fn` may
+   * have left behind) before returning. Edits `fn` makes are structural DOM
+   * edits against `root`, so they are naturally preserved through the
+   * unwind/reapply — nothing is round-tripped through OPML here.
+   *
+   * This is what guarantees `outlineToXml()` (and anything built on it)
+   * returns the complete document no matter how deep the hoist stack is.
+   */
+  private withFullTree<T>(fn: () => T): T {
+    if (this.hoistStack.length === 0) return fn()
+    const frames = this.hoistStack
+    for (let i = frames.length - 1; i >= 0; i--) this.undoHoist(frames[i])
+    try {
+      return fn()
+    } finally {
+      for (let i = 0; i < frames.length; i++) {
+        frames[i] = this.applyHoist(frames[i].node)
+      }
+    }
+  }
+
+  /** Hoist to the cursor. False if there is no cursor, or it has no subs. */
+  hoist(): boolean {
+    const node = this.getCursor()
+    if (!node) return false
+    if (childNodes(node).length === 0) return false
+    this.hoistStack.push(this.applyHoist(node))
+    const first = childNodes(this.root)[0]
+    if (first) this.setCursor(first)
+    return true
+  }
+
+  /** Pop one level of hoist. False if not currently hoisted. */
+  deHoist(): boolean {
+    const frame = this.hoistStack.pop()
+    if (!frame) return false
+    this.undoHoist(frame)
+    if (frame.node.isConnected) this.setCursor(frame.node)
+    return true
+  }
+
+  /** Pop every level of hoist, back to the real root. False if not hoisted. */
+  deHoistAll(): boolean {
+    if (this.hoistStack.length === 0) return false
+    while (this.hoistStack.length > 0) this.deHoist()
+    return true
+  }
+
+  isHoisted(): boolean {
+    return this.hoistStack.length > 0
+  }
+
+  hoistDepth(): number {
+    return this.hoistStack.length
   }
 
   // --- text formatting ------------------------------------------------------
@@ -959,6 +1089,7 @@ export class Op {
   }
 
   wipe(): void {
+    this.hoistStack = []
     if (this.root.querySelectorAll('.concord-node').length > 0) this.saveState()
     this.root.replaceChildren()
     const node = this.o.editor.makeNode()
@@ -1002,54 +1133,59 @@ export class Op {
   }
 
   outlineToXml(ownerName?: string, ownerEmail?: string, ownerId?: string): string {
-    const head: OpmlHeaders = this.getHeaders()
-    if (ownerName) head['ownerName'] = ownerName
-    if (ownerEmail) head['ownerEmail'] = ownerEmail
-    if (ownerId) head['ownerId'] = ownerId
-    head['title'] = this.getTitle() || ''
-    head['dateModified'] = new Date().toUTCString()
+    // Serialize against the complete document, not whatever's currently
+    // hoisted into view — see `withFullTree`. This is what stops a Save made
+    // while hoisted from writing out only the hoisted subtree.
+    return this.withFullTree(() => {
+      const head: OpmlHeaders = this.getHeaders()
+      if (ownerName) head['ownerName'] = ownerName
+      if (ownerEmail) head['ownerEmail'] = ownerEmail
+      if (ownerId) head['ownerId'] = ownerId
+      head['title'] = this.getTitle() || ''
+      head['dateModified'] = new Date().toUTCString()
 
-    const expansionStates: number[] = []
-    let nodeId = 1
-    let cursor: HTMLLIElement | null = this.root.querySelector('.concord-node')
-    while (cursor) {
-      if (!cursor.classList.contains('collapsed') && childNodes(cursor).length > 0) {
-        expansionStates.push(nodeId)
+      const expansionStates: number[] = []
+      let nodeId = 1
+      let cursor: HTMLLIElement | null = this.root.querySelector('.concord-node')
+      while (cursor) {
+        if (!cursor.classList.contains('collapsed') && childNodes(cursor).length > 0) {
+          expansionStates.push(nodeId)
+        }
+        nodeId++
+        let next: HTMLLIElement | null = null
+        if (!cursor.classList.contains('collapsed')) next = childNodes(cursor)[0] ?? null
+        if (!next) next = this._walk_down(cursor)
+        cursor = next
       }
-      nodeId++
-      let next: HTMLLIElement | null = null
-      if (!cursor.classList.contains('collapsed')) next = childNodes(cursor)[0] ?? null
-      if (!next) next = this._walk_down(cursor)
-      cursor = next
-    }
-    head['expansionState'] = expansionStates.join(',')
-    head['lastCursor'] = String(this.saveCursor())
+      head['expansionState'] = expansionStates.join(',')
+      head['lastCursor'] = String(this.saveCursor())
 
-    let opml = ''
-    let indent = 0
-    const add = (s: string) => {
-      opml += '\t'.repeat(indent) + s + '\n'
-    }
-    add('<?xml version="1.0"?>')
-    add('<opml version="2.0">')
-    indent++
-    add('<head>')
-    indent++
-    for (const name of Object.keys(head)) {
-      if (head[name] !== undefined) {
-        add('<' + name + '>' + escapeXml(head[name]) + '</' + name + '>')
+      let opml = ''
+      let indent = 0
+      const add = (s: string) => {
+        opml += '\t'.repeat(indent) + s + '\n'
       }
-    }
-    indent--
-    add('</head>')
-    add('<body>')
-    indent++
-    for (const n of childNodes(this.root)) opml += this.o.editor.opmlLine(n, indent)
-    indent--
-    add('</body>')
-    indent--
-    add('</opml>')
-    return opml
+      add('<?xml version="1.0"?>')
+      add('<opml version="2.0">')
+      indent++
+      add('<head>')
+      indent++
+      for (const name of Object.keys(head)) {
+        if (head[name] !== undefined) {
+          add('<' + name + '>' + escapeXml(head[name]) + '</' + name + '>')
+        }
+      }
+      indent--
+      add('</head>')
+      add('<body>')
+      indent++
+      for (const n of childNodes(this.root)) opml += this.o.editor.opmlLine(n, indent)
+      indent--
+      add('</body>')
+      indent--
+      add('</opml>')
+      return opml
+    })
   }
 
   xmlToOutline(
@@ -1061,6 +1197,9 @@ export class Op {
       typeof xmlText === 'string'
         ? new DOMParser().parseFromString(xmlText, 'application/xml')
         : xmlText
+    // Loading a document replaces the whole tree, which would leave any
+    // hoist frames pointing at detached nodes from the old one.
+    this.hoistStack = []
     this.root.replaceChildren()
 
     const titleEl = doc.querySelector('head > title, title')
