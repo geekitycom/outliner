@@ -321,9 +321,18 @@ export async function saveDocumentAs(): Promise<boolean> {
   const selected = await save({ defaultPath: currentPath ?? undefined, filters: OPML_FILTERS })
   if (!selected) return false // dialog cancelled
 
-  // The window title tracks the path, but the OPML <head><title> is part of
-  // the saved document itself — keep the two in sync on every Save As.
-  outliner.setTitle(basename(selected))
+  // Give the saved file a sensible <head><title> when it doesn't have one of
+  // its own — but never overwrite a title the user set.
+  //
+  // This used to assign the filename unconditionally. That was harmless when
+  // the OPML title had no UI at all, and became data loss the moment the
+  // title row made it visible and editable: type a title, save, and Save As
+  // silently replaced it with the filename. Only a document still carrying
+  // the untouched default gets the filename now.
+  const current = outliner.getTitle().trim()
+  if (current === '' || current === 'Untitled') {
+    outliner.setTitle(basename(selected))
+  }
 
   try {
     await invoke('write_file', { path: selected, contents: outliner.toOpml() })
