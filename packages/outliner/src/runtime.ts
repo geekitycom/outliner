@@ -89,6 +89,9 @@ export function resumeListening(): void {
   handleEvents = true
   const root = getFocusRoot()
   const o = outlinerForRoot(root)
+  // No title-row guard needed here: both focusCursor() and pasteBinFocus()
+  // refuse to steal focus from it themselves (see op.ts / outliner.ts), which
+  // covers every caller rather than this one.
   if (o) {
     if (o.op.inTextMode()) {
       o.op.focusCursor()

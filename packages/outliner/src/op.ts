@@ -98,6 +98,22 @@ export class Op {
   }
 
   focusCursor(): void {
+    // Never pull focus out of the title row (prefs.titleRow). It sits
+    // outside `root` and owns its own editing session, and this is one of
+    // the two ways the outline reclaims focus — `Outliner.pasteBinFocus()`
+    // is the other, guarded the same way.
+    //
+    // Both need it, and guarding only one is what caused a bug worth
+    // remembering: `resumeListening()` and `setFocusRoot()` each pick
+    // between these two by `inTextMode()`, so with only pasteBinFocus()
+    // guarded the row stayed clickable while the outline was idle and became
+    // completely unclickable once it was editing a headline — the state a
+    // hoist leaves it in. Guarding the two primitives covers every caller;
+    // guarding callers one at a time did not.
+    if (typeof document !== 'undefined') {
+      const active = document.activeElement
+      if (active && active.closest('.concord-title-row')) return
+    }
     textOf(this.getCursor() ?? this.root)?.focus()
   }
 

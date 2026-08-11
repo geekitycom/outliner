@@ -142,6 +142,38 @@ test.describe('title row', () => {
     expect(await toOpml(page)).toContain('text="a"')
   })
 
+  test('takes a click while the outline is editing a headline', async ({ page }) => {
+    await page.goto('/e2e/fixtures/title-row.html')
+    const title = page.locator('.concord-title-row .concord-text')
+
+    // Put the outline into text-edit mode, which is the state a hoist leaves
+    // it in. resumeListening() restores outline focus two different ways —
+    // pasteBinFocus() when idle, focusCursor() when editing text — and only
+    // the first was guarded against stealing focus from this row. So the row
+    // worked until you hoisted, then stopped taking clicks at all.
+    await page.locator('.concord-root .concord-text').first().dblclick()
+    await expect(page.locator('.concord-root .concord-text').first()).toBeFocused()
+
+    await title.click()
+    await expect(title).toBeFocused()
+
+    await page.keyboard.press('ControlOrMeta+a')
+    await page.keyboard.type('Edited While Outline Was Editing')
+    await page.keyboard.press('Enter')
+    await expect(title).toHaveText('Edited While Outline Was Editing')
+  })
+
+  test('takes a click after a hoist', async ({ page }) => {
+    await page.goto('/e2e/fixtures/title-row.html')
+    const title = page.locator('.concord-title-row .concord-text')
+
+    await page.locator('.concord-root .concord-text').first().dblclick()
+    await page.evaluate(() => (window as unknown as PageOutliner).outliner.hoist())
+
+    await title.click()
+    await expect(title).toBeFocused()
+  })
+
   test('typing in the row does not reach the outline', async ({ page }) => {
     await page.goto('/e2e/fixtures/title-row.html')
 
