@@ -38,8 +38,14 @@ percent-encoding = "2"
 # incompatible NSWindow types between this crate and tao's.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.4"
+# "NSWindowTabGroup" is the one feature added here beyond what tab-grouping
+# itself needed: it gates NSWindow::tabGroup() and the NSWindowTabGroup
+# class (isTabBarVisible/toggleTabBar's own guard is just "NSWindow", but
+# reading isTabBarVisible requires the tab group type) — see the "don't
+# auto-hide the tab bar" design note in README.md.
 objc2-app-kit = { version = "0.3.2", default-features = false, features = [
   "std",
   "NSWindow",
   "NSGraphics",
+  "NSWindowTabGroup",
 ] }

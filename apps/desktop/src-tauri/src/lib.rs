@@ -113,6 +113,26 @@ impl SendableNsWindow {
   }
 }
 
+/// Per-window (per-tab) cache of which native `NSWindowTabGroup` each
+/// window was last observed to belong to, keyed by window label — storing
+/// the group object's own pointer address as a plain `usize`, not the
+/// `Retained<NSWindowTabGroup>` itself, which is why this can be a plain
+/// `Mutex<HashMap<...>>` like `DirtyWindows`/`PendingFlow` above with no
+/// `SendableNsWindow`-style newtype needed for the map (only the one-shot
+/// trip into `run_on_main_thread` needs that).
+///
+/// This is NOT a source of truth for group *membership* — `tab_group_labels`
+/// still queries AppKit's `tabbedWindows` fresh every time for that, never
+/// this map (see its own doc comment for why). This map exists purely as a
+/// change-detector for `assert_tab_bar_visible_on_focus` below: it's what
+/// lets that handler tell "the user refocused a window whose group hasn't
+/// changed since last time" (skip — a deliberate View > Hide Tab Bar since
+/// then must be respected) apart from "this window is in a materially
+/// different group than last observed" (reassert) — see the "don't fight
+/// the user" design note in README.md.
+#[cfg(target_os = "macos")]
+struct TabGroupSeen(Mutex<HashMap<String, usize>>);
+
 #[tauri::command]
 fn set_dirty(app: tauri::AppHandle, label: String, dirty: bool) {
   app.state::<DirtyWindows>().0.lock().unwrap().insert(label, dirty);
@@ -379,6 +399,16 @@ fn create_document_window(
     group_as_tab(app, target, &window);
   }
 
+  // Force this window's tab bar visible even though it's a lone tab (in a
+  // brand-new group when group_with is None, or the newest tab in
+  // target's group otherwise) — see assert_tab_bar_visible's doc comment
+  // for why macOS's default auto-hide behavior here is a real bug, not
+  // just cosmetic.
+  #[cfg(target_os = "macos")]
+  if let Ok(ptr) = window.ns_window() {
+    assert_tab_bar_visible(app, ptr);
+  }
+
   Ok(())
 }
 
@@ -430,6 +460,125 @@ fn group_as_tab(app: &tauri::AppHandle, target: &tauri::WebviewWindow, new_windo
 fn group_as_tab(_app: &tauri::AppHandle, _target: &tauri::WebviewWindow, _new_window: &tauri::WebviewWindow) {
   // Native window tabs are a macOS concept; elsewhere "New"/"Open"'s "new
   // tab" is just an ordinary new window, so there's nothing to group.
+}
+
+/// Shows the tab bar for the window behind `ns_window_ptr` if it's
+/// currently hidden — the same effect as the user choosing "Show Tab Bar"
+/// (View menu on apps that have one; here, only reachable by right-
+/// clicking the tab bar itself or Cmd-Shift-\, since this app has no View
+/// menu). macOS auto-hides the tab bar whenever a group has only one
+/// window, which is the actual bug this exists to work around: with the
+/// bar hidden there's nothing to drag a tab to or from, making it
+/// impossible to merge a lone window into another group (or receive one)
+/// by dragging. See the "don't auto-hide the tab bar" design note in
+/// README.md.
+///
+/// Always checks `isTabBarVisible()` first and only calls `toggleTabBar:`
+/// when it's false — `toggleTabBar:` *toggles*, so calling it
+/// unconditionally on a window whose bar is already showing would hide
+/// it. A no-op if `tabGroup()` is nil, which the doc comment on the
+/// generated binding itself calls "lazily created on demand" — observed
+/// here to still be reliably non-nil immediately after
+/// `WebviewWindowBuilder::build()` returns (this app's windows are shown
+/// immediately on creation, never built with `.visible(false)`), but
+/// nothing about that is a documented guarantee, which is why every call
+/// site of this function is a best-effort attempt, not the only chance:
+/// see `assert_tab_bar_visible_on_focus` below for the backstop that
+/// catches it if a particular window ever *is* asked about too early.
+///
+/// Must run on the main thread; see `group_as_tab`'s doc comment for why
+/// the actual AppKit calls happen inside `run_on_main_thread` rather than
+/// here directly.
+#[cfg(target_os = "macos")]
+fn assert_tab_bar_visible(app: &tauri::AppHandle, ns_window_ptr: *mut std::ffi::c_void) {
+  let ptr = SendableNsWindow(ns_window_ptr);
+  let _ = app.run_on_main_thread(move || {
+    // SAFETY: see group_as_tab's SAFETY comment — same reasoning, applied
+    // to `tabGroup`/`isTabBarVisible`/`toggleTabBar` instead of
+    // `addTabbedWindow:ordered:`.
+    let ns_window: &NSWindow = unsafe { &*ptr.ptr().cast() };
+    let Some(tab_group) = ns_window.tabGroup() else {
+      return;
+    };
+    if !tab_group.isTabBarVisible() {
+      ns_window.toggleTabBar(None);
+    }
+  });
+}
+
+// No non-macOS stub twin here (unlike group_as_tab/tab_group_labels above):
+// `.ns_window()` itself is `#[cfg(target_os = "macos")]` in the tauri crate,
+// so every call site below is already cfg-gated on macOS before it can even
+// obtain the raw pointer this function needs — a stub would be unreachable
+// dead code, not a platform-agnostic call site like those two.
+
+/// The focus-driven backstop for `assert_tab_bar_visible` above: AppKit
+/// forms a brand-new tab group — with the same single-window auto-hidden
+/// bar `assert_tab_bar_visible` exists to override — whenever the user
+/// drags the last tab out of an existing group, and there is no creation
+/// hook of our own to catch that (this app never calls
+/// `WebviewWindowBuilder::build()` for it; AppKit does the whole thing
+/// itself in response to the drag). A window focus event is the nearest
+/// substitute: a freshly detached window becomes key essentially
+/// immediately after the drag completes, in every case exercised while
+/// writing this, so hooking `WindowEvent::Focused(true)` on the existing
+/// app-wide `on_window_event` handler (see `run()`) catches it without a
+/// new event registration.
+///
+/// The one thing this must NOT do is reassert on *every* focus of *every*
+/// window — `toggleTabBar:` would then fight the user's own explicit
+/// "Show Tab Bar" / "Hide Tab Bar" choice (Cmd-Shift-\, or the tab bar's
+/// own right-click menu — see `assert_tab_bar_visible`'s doc comment for
+/// why there's no View menu item for it here) on every window they ever
+/// refocus, popping a deliberately-hidden bar back on the moment they
+/// click back into that window. `TabGroupSeen` above is what avoids that:
+/// this only reasserts when `window`'s tab group is a *different* object
+/// than the last one recorded for its label (or there's no record yet).
+/// Comparing the group's own pointer identity, not
+/// `NSWindowTabGroup.identifier()`, is deliberate — nothing here confirms
+/// whether that identifier string varies per physical group the way the
+/// pointer reliably does (every group is a distinct Objective-C object,
+/// full stop), and guessing wrong would make this silently inert.
+///
+/// KNOWN GAP: dragging the last tab out and immediately dragging it back
+/// into a group with the *exact same pointer identity* it started in
+/// (unusual, but not impossible if AppKit ever reuses/keeps a group object
+/// alive across such a round trip) would read as "unchanged" and skip the
+/// reassert. Not verified either way without interactive testing — see
+/// the "don't auto-hide the tab bar" design note in README.md.
+#[cfg(target_os = "macos")]
+fn assert_tab_bar_visible_on_focus(app: &tauri::AppHandle, label: String, ns_window_ptr: *mut std::ffi::c_void) {
+  let ptr = SendableNsWindow(ns_window_ptr);
+  let app_handle = app.clone();
+  let _ = app.run_on_main_thread(move || {
+    // SAFETY: see group_as_tab's SAFETY comment.
+    let ns_window: &NSWindow = unsafe { &*ptr.ptr().cast() };
+    let Some(tab_group) = ns_window.tabGroup() else {
+      return;
+    };
+    let group_ptr = Retained::as_ptr(&tab_group) as usize;
+
+    // insert() both reads the previous value and writes the new one under
+    // one lock — the atomicity matters here: a separate get-then-insert
+    // could race a concurrent focus event on another window for the same
+    // label (a real if narrow possibility, since Tauri does not promise
+    // window events are delivered one at a time from a single thread).
+    let seen = app_handle.state::<TabGroupSeen>();
+    let previous = seen.0.lock().unwrap().insert(label, group_ptr);
+    if previous == Some(group_ptr) {
+      // Same group as last time this window was focused — leave it
+      // alone, since the user may have deliberately hidden its tab bar
+      // since then.
+      return;
+    }
+    // First time seeing this window, or its group is materially
+    // different from last time — a new/changed group defaults to hidden
+    // when it has only one tab, which is exactly the behavior this app
+    // wants overridden.
+    if !tab_group.isTabBarVisible() {
+      ns_window.toggleTabBar(None);
+    }
+  });
 }
 
 /// The Tauri window labels of every tab in `window`'s tab group, including
@@ -815,9 +964,24 @@ pub fn run() {
       app.manage(WindowCounter(AtomicU32::new(1)));
       app.manage(DirtyWindows(Mutex::new(HashMap::new())));
       app.manage(PendingFlow(Mutex::new(None)));
+      #[cfg(target_os = "macos")]
+      app.manage(TabGroupSeen(Mutex::new(HashMap::new())));
 
       let menu = build_menu(app.handle())?;
       app.set_menu(menu)?;
+
+      // The startup window (declared in tauri.conf.json, labeled "main") is
+      // the one document window create_document_window never builds, so it
+      // needs its own tab-bar assert here — every other window gets one at
+      // the end of create_document_window itself. See
+      // assert_tab_bar_visible's doc comment for what this is working
+      // around.
+      #[cfg(target_os = "macos")]
+      if let Some(main_window) = app.get_webview_window("main") {
+        if let Ok(ptr) = main_window.ns_window() {
+          assert_tab_bar_visible(app.handle(), ptr);
+        }
+      }
 
       app.on_menu_event(move |app, event| {
         let id = event.id().as_ref();
@@ -991,6 +1155,16 @@ pub fn run() {
         // window left to prompt in, and a destroyed webview can't clean up
         // after itself — so this has to happen here, not in the frontend.
         window.state::<DirtyWindows>().0.lock().unwrap().remove(window.label());
+      }
+      // The drag-out backstop for assert_tab_bar_visible — see
+      // assert_tab_bar_visible_on_focus's doc comment for the full
+      // reasoning, including why this only reasserts on a *changed* tab
+      // group rather than on every focus.
+      #[cfg(target_os = "macos")]
+      if let tauri::WindowEvent::Focused(true) = event {
+        if let Ok(ptr) = window.ns_window() {
+          assert_tab_bar_visible_on_focus(window.app_handle(), window.label().to_string(), ptr);
+        }
       }
     })
     .invoke_handler(tauri::generate_handler![

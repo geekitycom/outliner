@@ -149,6 +149,22 @@ New Window**, and the running list of open windows/tabs to any menu registered t
 that is implemented by hand. See "Design notes" below for why this one call was cheap enough to be
 worth adding, in contrast to the tab-grouping work above.
 
+### Always-visible tab bar
+
+macOS auto-hides a window's tab bar whenever its group has only one window in it — normally
+harmless, but it breaks dragging: with no bar showing, there's nothing to drag a tab *to* (merging
+a second window into a solo one) or *from* (pulling the only tab out to reorder/detach it), so a
+solo window is stuck undraggable in either direction until a second tab happens to land in it some
+other way. This app overrides that default, forcing every tab bar visible even for a single tab,
+via `assert_tab_bar_visible` in `src-tauri/src/lib.rs`: on the main thread, if
+`NSWindow.tabGroup()?.isTabBarVisible()` is false, it calls `-[NSWindow toggleTabBar:]` — the same
+action "Show Tab Bar" runs — always checking first, since `toggleTabBar:` *toggles* and would hide
+an already-visible bar if called blindly. This runs for every window `create_document_window`
+builds, for the startup window in `setup()` (the one document window that function never builds),
+and again, conditionally, on every window's `Focused(true)` event as a backstop for tab groups
+AppKit forms on its own — see design note 11 below for why that backstop is conditional, not
+unconditional, and for a known gap in it.
+
 ## Menu layout
 
 - **GeekityFlow** (macOS app menu) — About, Services, Hide/Hide Others/Show All (all predefined),
@@ -215,7 +231,7 @@ worth adding, in contrast to the tab-grouping work above.
 
 ## Design notes
 
-Ten choices here look like omissions or overengineering but aren't — please don't "fix" them
+Eleven choices here look like omissions or overengineering but aren't — please don't "fix" them
 without reading this first.
 
 **1. The menu is built in Rust (`build_menu` in `src-tauri/src/lib.rs`), not JS.** It used to be
@@ -439,17 +455,87 @@ be visibly wrong. Querying AppKit directly means the answer is never stale, at t
 `run_on_main_thread` hop per Close Window press — a price paid only when the feature is actually
 used, not on every tab open/drag.
 
-All of the AppKit-touching code (`group_as_tab`, `tab_group_labels`, `SendableNsWindow`) runs its
-actual message sends inside `AppHandle::run_on_main_thread`, never assuming the caller is already
-on the main thread — AppKit itself isn't thread-safe, so this matters regardless of how confident
-the call site looks. In practice, both call sites (the menu-event handler, and the
-`open_path_in_new_tab` command) already run on the main thread as of this writing — Tauri's own
+All of the AppKit-touching code (`group_as_tab`, `tab_group_labels`, `assert_tab_bar_visible`,
+`assert_tab_bar_visible_on_focus`, `SendableNsWindow`) runs its actual message sends inside
+`AppHandle::run_on_main_thread`, never assuming the caller is already on the main thread — AppKit
+itself isn't thread-safe, so this matters regardless of how confident the call site looks. In
+practice, every call site (the menu-event handler, the `open_path_in_new_tab` command, and the
+`on_window_event` handler) already runs on the main thread as of this writing — Tauri's own
 `tauri-runtime-wry` detects that and runs the closure immediately in place rather than queuing it
 — but `run_on_main_thread` is what keeps that an implementation detail instead of a correctness
 requirement this code would silently break if it ever stopped being true.
 
+**11. The tab bar is forced visible for single-tab groups, at the cost of a known gap around
+drag-out — investigated, not assumed, and the tradeoff is deliberate.** macOS hides a window's
+tab bar whenever its group has exactly one window, which turns out to be a real bug for this app,
+not a cosmetic one: with the bar hidden there's no drop target to drag a second tab onto (or drag
+the lone tab off of), so a solo window can get stuck permanently undraggable in either direction.
+`assert_tab_bar_visible` (`src-tauri/src/lib.rs`) overrides this — check
+`tabGroup()?.isTabBarVisible()`, call `toggleTabBar:` only if it's false — using the same
+`SendableNsWindow`/`run_on_main_thread` pattern `group_as_tab` established, and always checking
+first for the same reason: `toggleTabBar:` toggles, so calling it unconditionally on an
+already-visible bar would hide it.
+
+Three things had to be worked out rather than assumed:
+
+*Timing.* `NSWindow.tabGroup()`'s own doc comment calls it "lazily created on demand," which
+raised the question of whether it's reliably non-nil immediately after
+`WebviewWindowBuilder::build()` returns, before the window is fully on screen, or whether the
+assert has to be deferred. Without an interactive way to test this (verifying it would mean
+running the actual app, which is outside what this change could do), the honest answer is: not
+fully confirmed either way. The design leans on two things instead of one single assumption
+holding: this app never builds a window with `.visible(false)`, so `build()` returning already
+means the OS's window-creation call has completed, which is the more likely place for
+lazy-initialization to be forced regardless of on-screen compositing state — and, as a backstop
+regardless of whether that reasoning holds, `assert_tab_bar_visible_on_focus` (below) re-checks
+the same window on its very next focus event, which for a just-created window is normally within
+milliseconds. A single missed assert right after `build()` is not a dead end.
+
+*Every path that forms a group.* `create_document_window` asserts on the window it just built —
+covering New, New Window, and Open's new-tab case — after any `group_as_tab` call, so it applies
+whether the window joined an existing group or started a new one. The one document window
+`create_document_window` never builds is the startup window declared in `tauri.conf.json`
+(labeled `"main"`), so `setup()` fetches it by label and asserts on it directly.
+
+*Drag-out.* When the user drags the last tab out of a group, AppKit forms a brand-new group on
+its own — no `WebviewWindowBuilder::build()` call happens, so there's no creation-time hook to
+assert from. The chosen backstop is `WindowEvent::Focused(true)` on the app-wide
+`on_window_event` handler already in `run()` (a freshly detached window becomes key essentially
+immediately after the drag completes), reusing an already-registered event rather than adding a
+new one. This is where "don't fight the user" (point 4 below) became the binding constraint: an
+*unconditional* reassert on every focus would also pop a tab bar the user just deliberately hid
+(via Cmd-Shift-\ or the tab bar's own right-click menu — this app has no View menu, so those are
+the only ways to hide it) back open the next time they click into that window, which would be a
+new, self-inflicted annoyance in exchange for fixing the original one. `TabGroupSeen` — a
+`Mutex<HashMap<String, usize>>` keyed by window label, storing the tab group's own pointer
+address, managed as Tauri state — exists purely to gate this: `assert_tab_bar_visible_on_focus`
+only reasserts when the focused window's current tab group is a *different* object than the one
+last recorded for its label, which is what a drag-out (or a merge) produces and a plain refocus of
+an unchanged group does not. Pointer identity was chosen over
+`NSWindowTabGroup.identifier()` deliberately — nothing here confirms whether that identifier
+string actually varies per physical group, and every group is unambiguously a distinct
+Objective-C object either way, so comparing objects can't be wrong the way comparing an
+unverified string could be.
+
+**Known gap, called out rather than silently accepted:** if a tab is dragged out and then
+dragged back into a group that AppKit happens to represent with the exact same `NSWindowTabGroup`
+object it started in, `TabGroupSeen` reads that as "unchanged" and skips the reassert. Whether
+AppKit ever actually does that — reusing a group object across a detach-and-rejoin, as opposed to
+always minting a fresh one — was not established, again for lack of a way to test it
+interactively as part of this change. `TabGroupSeen` is explicitly *not* a general group-
+membership map (see `tab_group_labels`'s own doc comment for why membership itself is always
+queried fresh, never tracked) — it is scoped as narrowly as possible, to just this one
+change-detection job, specifically so a wrong guess here stays contained to "the tab bar
+occasionally doesn't force itself back on after an edge-case drag sequence" rather than
+resurfacing the stale-group bugs that design decision was written to avoid.
+
 ## Known limitations
 
+- The always-visible tab bar's drag-out backstop has one theoretical edge case: dragging a tab
+  out and immediately back into a group AppKit represents with the exact same object it started
+  in would be read as "unchanged" and skip re-forcing the bar visible. Not confirmed to actually
+  happen — see design note 11 above for the full reasoning and why the risk was scoped narrowly
+  on purpose rather than left unaddressed.
 - No autosave and no crash recovery — the unsaved-changes prompt is the only safety net.
 - No recent-files list, and every new/opened window starts from the same in-app pickers; the
   app can't yet be launched (or handed a file) by double-clicking an `.opml` file in Finder.
