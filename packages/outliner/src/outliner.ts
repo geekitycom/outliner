@@ -285,6 +285,10 @@ export class Outliner {
   }
 
   toOpml(ownerName?: string, ownerEmail?: string, ownerId?: string): string {
+    // Commit a title the user has typed but not yet blurred out of, so
+    // saving straight from the field writes what's on screen rather than
+    // the previous title.
+    this.titleRowCtl.flush()
     return this.op.outlineToXml(ownerName, ownerEmail, ownerId)
   }
 

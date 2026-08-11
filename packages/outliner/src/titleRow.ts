@@ -83,8 +83,29 @@ export class TitleRow {
     this.text.addEventListener('keydown', (e) => this.onKeydown(e))
   }
 
+  /** Whether the field genuinely owns focus right now. `editing` alone can
+   *  lie — see `refresh()`. */
+  private hasFocus(): boolean {
+    return typeof document !== 'undefined' && document.activeElement === this.text
+  }
+
+  /**
+   * Commit an edit that is still open.
+   *
+   * Called before serializing so a title the user has typed but not yet
+   * blurred out of still makes it into the saved document — pressing Cmd-S
+   * straight from the field would otherwise write the *previous* title.
+   */
+  flush(): void {
+    if (this.editing) this.commit()
+  }
+
   private beginEdit(): void {
-    if (this.editing) return
+    // A `focus` event while `editing` is still true means the previous
+    // session never ended (see `refresh()` for how that happens). Close it
+    // out instead of returning early, which used to leave the row inert for
+    // the rest of the session — the "can't edit the title after saving" bug.
+    if (this.editing) this.commit()
     if (this.o.prefs().readonly) return
     this.editing = true
     this.previousText = this.text.textContent ?? ''
@@ -141,10 +162,21 @@ export class TitleRow {
     this.element.querySelector('ol')?.classList.toggle('readonly', readonly)
   }
 
-  /** Push the current "what you're looking at" text into the field. A no-op
-   *  while the user has it mid-edit, so an external change doesn't clobber
-   *  what they're typing. */
+  /**
+   * Push the current "what you're looking at" text into the field. A no-op
+   * while the user has it mid-edit, so an external change doesn't clobber
+   * what they're typing.
+   *
+   * "Mid-edit" is reconciled against who actually holds focus, not just the
+   * `editing` flag. The flag can outlive the edit: `commit()` runs from the
+   * field's `blur`, and focus can leave without one — a native Save or Open
+   * panel taking focus does exactly that. A stuck flag made this method a
+   * permanent no-op, so the row froze on stale text (open a file, body
+   * updates, title still reads "Untitled") and `beginEdit()` returned early
+   * forever, so the row could never be typed in again.
+   */
   refresh(): void {
+    if (this.editing && !this.hasFocus()) this.commit()
     if (this.editing) return
     this.text.textContent = this.currentText()
   }

@@ -1,7 +1,9 @@
 import { test, expect, type Page } from '@playwright/test'
 
 /** The page's outliner instance, typed the way the other specs do it. */
-type PageOutliner = { outliner: { toOpml(): string; getTitle(): string } }
+type PageOutliner = {
+  outliner: { toOpml(): string; getTitle(): string; loadOpml(x: string): void }
+}
 
 function toOpml(page: Page): Promise<string> {
   return page.evaluate(() => (window as unknown as PageOutliner).outliner.toOpml())
@@ -35,6 +37,72 @@ test.describe('title row', () => {
       await page.evaluate(() => (window as unknown as PageOutliner).outliner.getTitle()),
     ).toBe('Renamed')
     expect(await toOpml(page)).toContain('<title>Renamed</title>')
+  })
+
+  // A native Save/Open panel takes focus away from the field without a blur
+  // ever reaching it, so commit() never runs and the `editing` flag sticks.
+  // That froze the row on stale text and made it permanently uneditable.
+  // Reproduced here by suppressing the blur notification, which is the only
+  // part of that a headless browser can stage.
+  async function stealFocusWithoutBlur(page: Page) {
+    await page.evaluate(() => {
+      const el = document.querySelector('.concord-title-row .concord-text') as HTMLElement
+      // `once` matters: the suppressor must swallow exactly this one blur.
+      // Left installed, it would also eat the blur of a *later* deliberate
+      // commit and fail the test for a reason that has nothing to do with
+      // the bug being reproduced.
+      el.addEventListener('blur', (e) => e.stopImmediatePropagation(), {
+        capture: true,
+        once: true,
+      })
+      ;(document.querySelector('.pasteBin') as HTMLElement).focus()
+    })
+  }
+
+  test('still refreshes after focus is lost without a blur', async ({ page }) => {
+    await page.goto('/e2e/fixtures/title-row.html')
+    const title = page.locator('.concord-title-row .concord-text')
+
+    await title.click()
+    await stealFocusWithoutBlur(page)
+
+    await page.evaluate(() =>
+      (window as unknown as PageOutliner).outliner.loadOpml(
+        '<opml version="2.0"><head><title>Opened File</title></head>' +
+          '<body><outline text="z"/></body></opml>',
+      ),
+    )
+
+    await expect(title).toHaveText('Opened File')
+  })
+
+  test('is still editable after focus is lost without a blur', async ({ page }) => {
+    await page.goto('/e2e/fixtures/title-row.html')
+    const title = page.locator('.concord-title-row .concord-text')
+
+    await title.click()
+    await stealFocusWithoutBlur(page)
+
+    await title.click()
+    await page.keyboard.press('ControlOrMeta+a')
+    await page.keyboard.type('Edited After Save')
+    await page.keyboard.press('Enter')
+
+    await expect(title).toHaveText('Edited After Save')
+    expect(
+      await page.evaluate(() => (window as unknown as PageOutliner).outliner.getTitle()),
+    ).toBe('Edited After Save')
+  })
+
+  test('toOpml() includes a title typed but not yet blurred out of', async ({ page }) => {
+    await page.goto('/e2e/fixtures/title-row.html')
+
+    await page.locator('.concord-title-row .concord-text').click()
+    await page.keyboard.press('ControlOrMeta+a')
+    await page.keyboard.type('Unblurred')
+
+    // Saving straight from the field must not write the previous title.
+    expect(await toOpml(page)).toContain('<title>Unblurred</title>')
   })
 
   test('typing in the row does not reach the outline', async ({ page }) => {
