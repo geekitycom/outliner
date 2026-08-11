@@ -66,62 +66,100 @@ don't need Rust.
 
 ## Multi-window
 
-The app is multi-document: **File > New** and **File > Open…** each get their own window rather
-than replacing what's in the current one.
+The app is multi-document, using **native macOS window tabs**: every document window is a tab,
+and windows that share a tab group are drawn together in one titlebar/tab-bar the way Safari or
+Finder windows are. **File > New** and **File > Open…** both open a new *tab* in the current
+window's group rather than a standalone window — **File > New Window** is the explicit way to
+start a fresh group.
 
-- **New** (`Cmd/Ctrl-N`) — always opens a brand-new blank window. Handled entirely in Rust
-  (`create_document_window` in `src-tauri/src/lib.rs`) with no round trip to any frontend, since
-  a blank document needs no state that only JS has.
+- **New** (`Cmd/Ctrl-N`) — opens a new blank tab, grouped with the focused window (falls back to
+  a standalone window if nothing is focused, which is otherwise never the normal case). Handled
+  entirely in Rust (`create_document_window` in `src-tauri/src/lib.rs`) with no round trip to any
+  frontend, since a blank document needs no state that only JS has — grouping only needs to know
+  *which window is focused*, not anything about its document.
 - **Open…** (`Cmd/Ctrl-O`) — native file picker runs in the focused window, then:
-  - if that window is a **blank, untouched Untitled document** (no path *and* not dirty),
-    the chosen file loads into it in place — there's nothing to lose.
-  - otherwise (it has a path, or is dirty, or both), that window's document is left completely
-    alone and the file opens in a **new** window instead.
-- **Close Window** (`Cmd/Ctrl-W`) — closes just the focused window, running the same
-  unsaved-changes prompt as the native close button (traffic-light / titlebar close). Closing
-  the last open window quits the app — this is Tauri's default behavior on every platform, so
-  there's no custom "reopen on Dock click" handling.
+  - if that window is a **blank, untouched Untitled tab** (no path *and* not dirty), the chosen
+    file loads into it in place — there's nothing to lose.
+  - otherwise (it has a path, or is dirty, or both), that tab's document is left completely alone
+    and the file opens in a **new tab**, grouped with the window that opened it
+    (`open_path_in_new_tab` in `src-tauri/src/lib.rs`).
+- **New Window** (`Cmd/Ctrl-Shift-N`) — opens a blank tab in a **standalone** window, starting a
+  new tab group rather than joining the focused one. This is the one way to deliberately get a
+  window that isn't grouped with anything.
+- **Close Tab** (`Cmd/Ctrl-W`) — closes just the focused tab, running the same unsaved-changes
+  prompt as the native close button (traffic-light / titlebar close) — mechanically this is just
+  Tauri's predefined "close window" menu role with the label changed, since under native tabbing
+  each tab already *is* a window as far as Tauri/AppKit are concerned.
+- **Close Window** (`Cmd/Ctrl-Shift-W`) — closes **every tab in the focused window's tab group**,
+  prompting one at a time for whichever are dirty (clean tabs close immediately, no prompt).
+  Reuses the same Rust-side walk Quit uses (see below) rather than a second implementation — see
+  "Design notes" for why, and for why the group's membership is read fresh from AppKit on every
+  Close Window rather than tracked in a map.
 - **Save** (`Cmd/Ctrl-S`) — writes to the current path, or falls through to Save As if there
   isn't one yet.
 - **Save As…** (`Cmd/Ctrl-Shift-S`) — native save picker, updates the OPML `<head><title>` to
   the new file's basename, then writes.
-- **Quit** (`Cmd/Ctrl-Q`) — checks *every* open window, not just the focused one. If none are
-  dirty, the app exits immediately. Otherwise Rust works through the dirty windows one at a
-  time: focus the window, ask its frontend to run the same unsaved-changes prompt Close Window
-  uses, and wait for an answer before moving on. Cancel at any window aborts the whole quit —
-  nothing else is prompted and no window closes. Save or Don't Save moves on to the next dirty
-  window (a failed or cancelled Save aborts the quit, same as Close Window). Once every dirty
-  window is resolved, the app exits. See "Design notes" below for why this needed a custom menu
-  item and a Rust-side dirty-state map, not just an `ExitRequested` handler.
+- **Quit** (`Cmd/Ctrl-Q`) — checks *every* open tab app-wide, across every window and every tab
+  group, not just the focused one. If none are dirty, the app exits immediately. Otherwise Rust
+  works through the dirty tabs one at a time: focus the tab, ask its frontend to run the same
+  unsaved-changes prompt Close Tab uses, and wait for an answer before moving on. Cancel at any
+  tab aborts the whole quit — nothing else is prompted and no window closes. Save or Don't Save
+  moves on to the next dirty tab (a failed or cancelled Save aborts the quit, same as Close Tab).
+  Once every dirty tab is resolved, the app exits. See "Design notes" below for why this needed a
+  custom menu item and a Rust-side dirty-state map, not just an `ExitRequested` handler.
 
-Because Open never discards a window's content — it either loads into an already-blank window
-or opens a new one — only the window's native close path and Quit still need the unsaved-changes
-guard. That prompt (**Save / Don't Save / Cancel**, via an in-app `<dialog>` — the dialog plugin's
+Quit and Close Window are both driven by the same generalized machinery in `src-tauri/src/lib.rs`
+— `PendingFlow`/`Flow`, `advance_flow`, and the shared `flow_response` command — rather than two
+near-identical walk-and-prompt implementations. They differ only in *which* tabs they visit (every
+dirty tab app-wide for Quit, versus the specific tab-group snapshot `close_window_group` captures
+for Close Window) and in what happens once a tab resolves (Quit leaves it open; Close Window
+destroys it). See "Design notes" below for the invariants this sharing has to preserve.
+
+Because Open never discards a tab's content — it either loads into an already-blank tab or opens
+a new one — only a tab's native close path, Close Window, and Quit need the unsaved-changes guard.
+That prompt (**Save / Don't Save / Cancel**, via an in-app `<dialog>` — the dialog plugin's
 `ask`/`confirm` are two-button only and have no room for Cancel) lives in `confirmClose()` (Close
-Window / the traffic light) and `confirmQuit()` (Quit) in `src/document.ts`, both built on the
-same `confirmDiscard()` prompt. Choosing Save actually saves before proceeding, and aborts the
-whole close/quit if that save is cancelled or fails. Read/write errors surface through the dialog
-plugin's `message()` rather than a thrown promise. The window title tracks the current file and
-gets a leading `•` while the document is dirty.
+Tab / the traffic light / Close Window's per-tab prompt) and `confirmQuit()` (Quit) in
+`src/document.ts`, both built on the same `confirmDiscard()` prompt. Choosing Save actually saves
+before proceeding, and aborts the whole close/quit if that save is cancelled or fails. Read/write
+errors surface through the dialog plugin's `message()` rather than a thrown promise. The window
+title tracks the current file and gets a leading `•` while the document is dirty.
 
 `confirmDiscard()` is laid out like the macOS save alert it stands in for: a warning icon, a bold
 question naming the document, a consequence line, and the three choices as full-width buttons
 stacked vertically with Save tinted as the default. It takes the document's name as an argument
-rather than saying "this document" — during a quit the flow walks each dirty window in turn, and
-an anonymous prompt gives no clue *which* document is being asked about. Save is both first in
-DOM order and focused, so Return activates it and the tint tells the user so; Esc still maps to
-Cancel, so the destructive choice is never a default.
+rather than saying "this document" — during a quit (or a Close Window group walk) the flow visits
+several tabs in turn, and an anonymous prompt gives no clue *which* document is being asked about.
+Save is both first in DOM order and focused, so Return activates it and the tint tells the user
+so; Esc still maps to Cancel, so the destructive choice is never a default.
 
-Each window is its own Tauri webview with its own JS realm, so `document.ts`'s module-level
-`outliner`/`currentPath` state is automatically per-window — no registry keyed by window label
-is needed to keep multiple documents' state apart.
+Each tab is its own Tauri webview window with its own JS realm, so `document.ts`'s module-level
+`outliner`/`currentPath` state is automatically per-tab — no registry keyed by window label is
+needed to keep multiple documents' state apart. The Rust-side `DirtyWindows` map (also keyed by
+window label) works the same way: one entry per tab, regardless of which group that tab is
+currently in.
+
+### Window menu
+
+A **Window** menu (no custom items beyond the standard Minimize/Zoom pair) is registered as the
+app's windows menu via `Submenu::set_as_windows_menu_for_nsapp()`, which is what makes tabs
+switchable from the keyboard at all: macOS automatically appends **Select Next Tab**
+(`Cmd-Shift-]`) / **Select Previous Tab** (`Cmd-Shift-[`), **Merge All Windows**, **Move Tab to
+New Window**, and the running list of open windows/tabs to any menu registered this way — none of
+that is implemented by hand. See "Design notes" below for why this one call was cheap enough to be
+worth adding, in contrast to the tab-grouping work above.
 
 ## Menu layout
 
 - **GeekityFlow** (macOS app menu) — About, Services, Hide/Hide Others/Show All (all predefined),
   and Quit (`Cmd/Ctrl-Q`, deliberately a *custom* item, not predefined — see "Design notes" below
   for why).
-- **File** — New, Open…, Save, Save As…, Close Window (see above).
+- **File** — New (`Cmd/Ctrl-N`), Open… (`Cmd/Ctrl-O`), New Window (`Cmd/Ctrl-Shift-N`), Close Tab
+  (`Cmd/Ctrl-W`), Close Window (`Cmd/Ctrl-Shift-W`), Save (`Cmd/Ctrl-S`), Save As…
+  (`Cmd/Ctrl-Shift-S`) — see "Multi-window" above for what each does. Save/Save As sit *below*
+  the two Close items, not above them — deliberate, not a mistake: New/Open/New Window/Close
+  Tab/Close Window are all about which tab or window you're looking at, and Save/Save As are
+  about that tab's document, so the menu groups by "which window" before "which document."
 - **Edit** — Cut, Copy, Paste only. See "Design notes" below for why Undo and Select All are
   deliberately absent.
 - **Outliner** — modeled on Dave Winer's Drummer (drummer.land) Outliner menu:
@@ -170,11 +208,14 @@ is needed to keep multiple documents' state apart.
   outliner's own keydown handler, and on macOS the menu wins that race and shadows the handler
   entirely. That's deliberate here, not an oversight, and it does not contradict the Outliner
   menu's restraint or the Edit menu's missing Undo/Select All — see design note 9 below for why.
+- **Window** — Minimize, Zoom (both predefined), then whatever macOS appends automatically —
+  Select Next/Previous Tab, Merge All Windows, Move Tab to New Window, and the running list of
+  open windows/tabs. See the "Window menu" subsection under "Multi-window" above.
 - **Help** — Keyboard Shortcuts (no accelerator; opens the shortcuts modal).
 
 ## Design notes
 
-Nine choices here look like omissions or overengineering but aren't — please don't "fix" them
+Ten choices here look like omissions or overengineering but aren't — please don't "fix" them
 without reading this first.
 
 **1. The menu is built in Rust (`build_menu` in `src-tauri/src/lib.rs`), not JS.** It used to be
@@ -357,6 +398,55 @@ a *different* outcome than clicking the menu item produces (or collide with an u
 menu item) — not the "identical wrapper" situation the Reorg menu is in. The two menus reaching
 different conclusions isn't inconsistency; it's the same rule (never shadow a keystroke whose
 outcome the menu item wouldn't reproduce) applied to two different sets of facts.
+
+**10. Native window tabs needed raw AppKit for the grouping/ungrouping itself, but not for tab
+switching — and tab-group membership is queried from AppKit, never tracked in Rust.** Three
+separate decisions, worth pulling apart:
+
+*Why grouping needed objc2 at all.* Tauri exposes `WebviewWindowBuilder::tabbing_identifier`,
+which reaches tao's `setTabbingIdentifier` — but that only makes a window *eligible* to be tabbed
+together with others sharing the same identifier; it doesn't let this app *choose* which window a
+new tab joins, or force one at all. Whether same-identifier windows actually merge into one tab
+group is entirely up to the user's own macOS "Prefer tabs when opening documents" setting (System
+Settings > Desktop & Dock) once `tabbing_identifier` is the only lever pulled — tao exposes no
+`tabbingMode` setter and no `addTabbedWindow:ordered:`. Since File > New and File > Open both need
+to *deterministically* join the focused window's group regardless of that system setting (that's
+the whole point of "New opens a tab, not a window"), this app has to call
+`-[NSWindow addTabbedWindow:ordered:]` itself — which means going straight through objc2, the only
+route tao/Tauri leave open to it. `group_as_tab` in `src-tauri/src/lib.rs` is the one place that
+happens; `objc2`/`objc2-app-kit` are pinned in `src-tauri/Cargo.toml` to the exact versions already
+resolved transitively through tao (verify with `cargo tree -p objc2 -i` — everything should
+converge on one copy), so cargo unifies onto a single `NSWindow` type rather than linking two
+incompatible copies of the objc2 runtime.
+
+*Why tab switching didn't.* Select Next/Previous Tab, Merge All Windows, and friends are *also*
+AppKit features with no tao equivalent — but unlike grouping, Tauri already wraps the one call
+that's needed: `Submenu::set_as_windows_menu_for_nsapp()`. Registering a plain "Window" submenu
+(Minimize + Zoom, the usual native pair) this way makes macOS append the whole tab-switching UI
+automatically, no objc2 required. That asymmetry — raw AppKit for grouping, a one-line Tauri call
+for switching — is why the two ended up implemented so differently rather than either both getting
+custom AppKit code or both being skipped.
+
+*Why group membership is queried, not tracked.* `close_window_group`/`tab_group_labels` ask
+AppKit's `tabbedWindows` fresh every time Close Window runs, rather than consulting some
+`Mutex<HashMap<String, Vec<String>>>` this crate maintained itself. A tracked map was tempting —
+it would avoid the `run_on_main_thread` round trip — but the user can drag a tab out of a group
+into its own window, or drag it into a *different* group, entirely through the OS's own tab UI,
+with no event this app can observe. Any Rust-side copy of "which tabs are in which group" would
+start drifting out of sync the first time that happens, and Close Window is exactly the feature
+where acting on a stale group (closing tabs that already left, or missing ones that joined) would
+be visibly wrong. Querying AppKit directly means the answer is never stale, at the cost of one
+`run_on_main_thread` hop per Close Window press — a price paid only when the feature is actually
+used, not on every tab open/drag.
+
+All of the AppKit-touching code (`group_as_tab`, `tab_group_labels`, `SendableNsWindow`) runs its
+actual message sends inside `AppHandle::run_on_main_thread`, never assuming the caller is already
+on the main thread — AppKit itself isn't thread-safe, so this matters regardless of how confident
+the call site looks. In practice, both call sites (the menu-event handler, and the
+`open_path_in_new_tab` command) already run on the main thread as of this writing — Tauri's own
+`tauri-runtime-wry` detects that and runs the closure immediately in place rather than queuing it
+— but `run_on_main_thread` is what keeps that an implementation detail instead of a correctness
+requirement this code would silently break if it ever stopped being true.
 
 ## Known limitations
 

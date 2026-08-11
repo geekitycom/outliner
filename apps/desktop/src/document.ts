@@ -1,13 +1,14 @@
 // Owns the current file path and dirty state, and three of the four file
 // operations the menu (in src-tauri/src/lib.rs) drives: Open, Save, Save
-// As. New is the odd one out — it always opens a brand-new window and needs
-// no state from this module, so Rust creates that window directly with no
-// round trip through here (see create_document_window in lib.rs).
+// As. New is the odd one out — it always opens a brand-new tab and needs no
+// state from this module, so Rust creates that tab directly with no round
+// trip through here (see create_document_window in lib.rs).
 //
-// Module-level state (`outliner`, `currentPath` below) is safe per-window:
-// each Tauri window is a separate webview with its own JS realm, so there's
-// exactly one copy of this module's state per window automatically — no
-// registry keyed by window label is needed.
+// Module-level state (`outliner`, `currentPath` below) is safe per-tab: each
+// Tauri window (and, now that this app has native tabs, each tab IS a
+// window — see the README's "Multi-window" section) is a separate webview
+// with its own JS realm, so there's exactly one copy of this module's state
+// per tab automatically — no registry keyed by window label is needed.
 import type { Outliner } from '@andrewshell/outliner'
 import { EMPTY_OPML } from '@andrewshell/outliner'
 import { invoke } from '@tauri-apps/api/core'
@@ -170,10 +171,13 @@ export function initDocument(instance: Outliner): void {
  * Runs the unsaved-changes prompt when the document is dirty and reports
  * whether it's safe to proceed — with the Save choice actually saved first,
  * and the whole thing aborted if that save is itself cancelled or fails.
- * Used by the window's close guard (main.ts) — New and Open no longer need
- * it: New always opens a fresh window (nothing here to discard) and Open
- * either loads into an already-blank window or opens a new one, so neither
- * ever discards this window's content.
+ * Used by the window's own close guard (closeTab() in main.ts, for the
+ * traffic light and the predefined Close Tab menu item) and, via this
+ * window's 'menu-close-window-group' listener, by Rust's Close Window
+ * flow when walking a tab group (see close_window_group in lib.rs) — New
+ * and Open never need it: New always opens a fresh tab (nothing here to
+ * discard) and Open either loads into an already-blank tab or opens a new
+ * one, so neither ever discards this window's content.
  */
 export async function confirmClose(): Promise<boolean> {
   if (!isDirty()) return true
@@ -185,15 +189,17 @@ export async function confirmClose(): Promise<boolean> {
 
 /**
  * Runs the same unsaved-changes prompt as confirmClose(), for a window
- * Rust's quit flow (advance_quit in src-tauri/src/lib.rs) has singled out
- * as dirty in response to Cmd-Q. Not just confirmClose() reused as-is,
- * because the two callers need different things done with a "discard"
- * choice:
+ * Rust's Quit flow (advance_flow/advance_quit_step in src-tauri/src/lib.rs)
+ * has singled out as dirty in response to Cmd-Q. Not just confirmClose()
+ * reused as-is, because the two callers need different things done with a
+ * "discard" choice:
  *
- * - confirmClose()'s caller (closeWindow() in main.ts) destroys this window
- *   right after a truthy result, which drops its entry from Rust's dirty
- *   map on its own (see the Destroyed handler in lib.rs) — nothing further
- *   to clean up here.
+ * - confirmClose()'s callers (closeTab() in main.ts for the traffic light/
+ *   Close Tab; flow_response in lib.rs, via this window's own
+ *   'menu-close-window-group' listener, for Close Window's tab-group walk)
+ *   both destroy this window right after a truthy result, which drops its
+ *   entry from Rust's dirty map on its own (see the Destroyed handler in
+ *   lib.rs) — nothing further to clean up here.
  * - This window stays *open* through a quit — Rust works through every
  *   dirty window in turn, only exiting once they're all resolved, and
  *   "Don't Save" doesn't close anything. So the changed flag has to be
@@ -259,15 +265,16 @@ export async function openPathAtBoot(path: string): Promise<void> {
 
 /**
  * File > Open. Shows the native picker, then either loads the chosen file
- * into this window or hands it to a new one, depending on whether this
- * window already "belongs" to a document:
+ * into this window or hands it to a new tab grouped with this one,
+ * depending on whether this window already "belongs" to a document:
  *
  * - blank AND untouched (no path, not dirty) — nothing to lose, load here.
  * - anything else (has a path, or is dirty, or both) — this window's
- *   document is left completely alone and the new file opens in a new
- *   window instead. That means no confirmClose() prompt on this path
- *   either: we're not discarding this window's content, just not touching
- *   it.
+ *   document is left completely alone and the new file opens in a new tab
+ *   instead (see open_path_in_new_tab in src-tauri/src/lib.rs — it groups
+ *   the new tab with whichever window invoked this command, i.e. this
+ *   one). That means no confirmClose() prompt on this path either: we're
+ *   not discarding this window's content, just not touching it.
  */
 export async function openDocument(): Promise<void> {
   const selected = await open({ filters: OPML_FILTERS })
@@ -279,7 +286,7 @@ export async function openDocument(): Promise<void> {
   }
 
   try {
-    await invoke('open_path_in_new_window', { path: selected })
+    await invoke('open_path_in_new_tab', { path: selected })
   } catch (err) {
     await reportError('open', selected, err)
   }

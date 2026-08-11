@@ -5,11 +5,20 @@
 // for the frontend to surface via the dialog plugin's message().
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::webview::WebviewWindowBuilder;
 use tauri::{Emitter, Manager, WebviewUrl};
+
+// Native window tabs (grouping windows into one tab bar) has no tao/Tauri
+// API of its own — see the "why native tabs needed raw AppKit" design note
+// in README.md. `group_as_tab`, `tab_group_labels`, and `SendableNsWindow`
+// below are the only places this crate touches AppKit directly.
+#[cfg(target_os = "macos")]
+use objc2::rc::Retained;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::{NSWindow, NSWindowOrderingMode};
 
 #[tauri::command]
 fn read_file(path: String) -> Result<String, String> {
@@ -33,74 +42,167 @@ impl WindowCounter {
   }
 }
 
-/// Per-window "has unsaved changes" flags, keyed by window label. Dirty
-/// state lives in each window's JS (`isDirty()` in document.ts); this is
-/// Rust's own copy of it, pushed from the frontend via `set_dirty` below
-/// rather than pulled, since Rust has no way to reach into a webview's JS
-/// state on demand. The quit flow (`advance_quit` below) needs this to know
-/// *before* prompting anything whether there's anything to prompt about.
+/// Per-window "has unsaved changes" flags, keyed by window label — one
+/// entry per *tab* now that each tab is its own native window (see the
+/// "Multi-window" section of README.md). Dirty state lives in each
+/// window's JS (`isDirty()` in document.ts); this is Rust's own copy of
+/// it, pushed from the frontend via `set_dirty` below rather than pulled,
+/// since Rust has no way to reach into a webview's JS state on demand.
+/// Both flows driven by `advance_flow` below (Quit, and Close Window's tab-
+/// group walk) need this to know *before* prompting anything whether
+/// there's anything to prompt about.
 ///
 /// A window's entry MUST be removed when it's destroyed (see the
 /// `on_window_event` handler in `run()`) — a stale `true` left behind for a
-/// window that no longer exists would block quit forever with no window
+/// window that no longer exists would block a flow forever with no window
 /// left to show a prompt in, and a destroyed webview can't clean up after
 /// itself.
 struct DirtyWindows(Mutex<HashMap<String, bool>>);
 
-/// Guards the quit flow against re-entrancy. Cmd-Q pressed a second time —
-/// whether the OS just re-delivers the keystroke, or the user genuinely
-/// presses it again while a dirty-window prompt from the first press is
-/// still open — must not start a second walk through the dirty windows on
-/// top of the first one. Reset to `false` whenever a flow ends, either by
-/// finishing (`advance_quit`'s `app.exit(0)` path) or being cancelled
-/// (`quit_response`'s `proceed: false` path), so an aborted quit never
-/// leaves the app unable to start a new one.
-struct QuitInProgress(AtomicBool);
+/// Which multi-window flow, if any, is currently walking windows one at a
+/// time asking about unsaved changes — and the guard against starting a
+/// second one on top of it. `Flow::Quit` (Cmd-Q) visits every dirty window
+/// app-wide and exits once none remain unresolved (`advance_quit_step`
+/// below). `Flow::CloseGroup` (Cmd-Shift-W) visits only the tab labels
+/// captured once, up front, from AppKit's `tabbedWindows` when the flow
+/// started (`close_window_group`/`tab_group_labels` below), destroying
+/// each tab as it resolves instead of exiting the app
+/// (`advance_close_group_step`).
+///
+/// Generalized from a single boolean (this crate's original Quit-only
+/// design) rather than giving Close Window a second, near-identical set of
+/// state and functions: the two flows share the same re-entrancy trap —
+/// Cmd-Q or Cmd-Shift-W pressed a second time, whether the OS just
+/// re-delivers the keystroke or the user genuinely presses it again while
+/// a prompt from the first press is still open, must not start a second
+/// walk on top of the first one — and the same rule that only a window
+/// which still exists may veto (see `advance_quit_step`'s and
+/// `advance_close_group_step`'s handling of a label whose window is
+/// already gone). Reset to `None` whenever a flow ends, either by
+/// finishing or being cancelled (`flow_response`'s `proceed: false` path),
+/// so an aborted flow never leaves the app unable to start a new one —
+/// Quit *or* Close Window.
+struct PendingFlow(Mutex<Option<Flow>>);
+
+enum Flow {
+  Quit,
+  CloseGroup(Vec<String>),
+}
+
+/// A raw AppKit object pointer, made `Send` so it can travel into the
+/// `run_on_main_thread` closures in `group_as_tab`/`tab_group_labels`
+/// below. Sound because only the pointer *value* crosses threads — no
+/// different from sending a `usize` — and it is never dereferenced
+/// anywhere except inside a closure `run_on_main_thread` has already
+/// routed onto the main thread, the only thread AppKit objects are safe to
+/// actually use from.
+#[cfg(target_os = "macos")]
+struct SendableNsWindow(*mut std::ffi::c_void);
+#[cfg(target_os = "macos")]
+unsafe impl Send for SendableNsWindow {}
+#[cfg(target_os = "macos")]
+impl SendableNsWindow {
+  // A method, not a public field: closures below capture by the paths they
+  // actually use (Rust's "disjoint capture" rules), so reading `.0`
+  // directly inside a `run_on_main_thread` closure would capture just that
+  // raw-pointer *field* rather than the whole `SendableNsWindow` — silently
+  // losing the `unsafe impl Send` above, since `*mut c_void` alone isn't
+  // Send. Going through a method call forces capture of the whole value.
+  fn ptr(&self) -> *mut std::ffi::c_void {
+    self.0
+  }
+}
 
 #[tauri::command]
 fn set_dirty(app: tauri::AppHandle, label: String, dirty: bool) {
   app.state::<DirtyWindows>().0.lock().unwrap().insert(label, dirty);
 }
 
-/// Reports the outcome of the unsaved-changes prompt a `menu-quit` event
-/// (from `advance_quit` below) triggered in `label`'s window, and drives the
-/// rest of the quit flow forward.
+/// Reports the outcome of the unsaved-changes prompt a flow step below
+/// (`advance_quit_step`'s `menu-quit`, or `advance_close_group_step`'s
+/// `menu-close-window-group`) triggered in `label`'s window, and drives the
+/// rest of whichever flow is running forward. Shared by Quit and Close
+/// Window rather than each having its own near-identical command — see
+/// `PendingFlow`'s doc comment for why generalizing this one is what keeps
+/// the two flows' invariants (re-entrancy, "only a window that still exists
+/// may veto") from drifting apart as a second copy would risk.
 ///
-/// `proceed: false` is Cancel — abort the whole quit. Nothing else is
-/// prompted and no window closes; just clear the re-entrancy guard so a
-/// later Cmd-Q can start over.
+/// `proceed: false` is Cancel — abort the whole flow, whichever one it is.
+/// Nothing else is prompted and no window closes; just clear `PendingFlow`
+/// so a later Cmd-Q or Cmd-Shift-W can start over.
 ///
 /// `proceed: true` covers both Save (already written to disk, with the
 /// document's changed state already cleared) and Don't Save (changed state
-/// *also* already cleared on the frontend — see `confirmQuit` in
-/// document.ts for why that matters here). Either way this window is done,
-/// so its entry is marked clean right here rather than waiting on
-/// `set_dirty`'s own separate `invoke()` call to arrive first: that call
+/// *also* already cleared on the frontend for Quit — see `confirmQuit` in
+/// document.ts for why that matters there; Close Window uses `confirmClose`
+/// instead, which doesn't need to, since the window is destroyed right
+/// below instead of staying open). Either way this window's own part is
+/// done, so its dirty entry is marked clean right here rather than waiting
+/// on `set_dirty`'s own separate `invoke()` call to arrive first: that call
 /// and this one are sent in order from the same webview, but nothing
 /// guarantees Rust *processes* two independent IPC calls in send order, and
-/// racing that would make the quit flow's progress non-deterministic.
+/// racing that would make the flow's progress non-deterministic.
+///
+/// Close Window additionally destroys `label`'s window once it's resolved
+/// here — unlike Quit, which leaves every window open until the very end
+/// (the process exit itself is what closes them) — since Close Window's
+/// whole point is to actually close each tab, not just clear its dirty
+/// flag.
 #[tauri::command]
-fn quit_response(app: tauri::AppHandle, label: String, proceed: bool) {
+fn flow_response(app: tauri::AppHandle, label: String, proceed: bool) {
   if !proceed {
-    app.state::<QuitInProgress>().0.store(false, Ordering::SeqCst);
+    *app.state::<PendingFlow>().0.lock().unwrap() = None;
     return;
   }
+
   app
     .state::<DirtyWindows>()
     .0
     .lock()
     .unwrap()
-    .insert(label, false);
-  advance_quit(&app);
+    .insert(label.clone(), false);
+
+  let is_close_group = matches!(
+    app.state::<PendingFlow>().0.lock().unwrap().as_ref(),
+    Some(Flow::CloseGroup(_))
+  );
+  if is_close_group {
+    if let Some(window) = app.get_webview_window(&label) {
+      let _ = window.destroy();
+    }
+  }
+
+  advance_flow(&app);
 }
 
-/// Drives the quit flow one step: finds the next dirty window (if any),
-/// focuses it, and asks its frontend to run the unsaved-changes prompt.
-/// Used both to start the flow (from the "quit" menu event) and to continue
-/// it (from `quit_response` once a window resolves) — there's no real
-/// difference between "start" and "continue" here, since both just mean
-/// "find the next dirty window, or exit if there isn't one."
-fn advance_quit(app: &tauri::AppHandle) {
+/// Drives whichever flow is in `PendingFlow` one step further. Used both to
+/// start a flow (the "quit"/"close-window" menu event branches in
+/// `on_menu_event` below) and to continue it (`flow_response`, once a
+/// window resolves) — there's no real difference between "start" and
+/// "continue" here, matching the original single-flow `advance_quit`'s own
+/// reasoning for this shape.
+fn advance_flow(app: &tauri::AppHandle) {
+  let is_quit = {
+    let flow = app.state::<PendingFlow>();
+    let guard = flow.0.lock().unwrap();
+    match guard.as_ref() {
+      None => return, // nothing in progress — defensive, shouldn't happen
+      Some(Flow::Quit) => true,
+      Some(Flow::CloseGroup(_)) => false,
+    }
+  };
+  if is_quit {
+    advance_quit_step(app);
+  } else {
+    advance_close_group_step(app);
+  }
+}
+
+/// Quit's own step of `advance_flow` — finds the next dirty window
+/// app-wide (not scoped to any particular tab group, since Quit must
+/// account for every open document, in every group), focuses it, and asks
+/// its frontend to run the unsaved-changes prompt.
+fn advance_quit_step(app: &tauri::AppHandle) {
   let next_dirty = {
     let dirty_windows = app.state::<DirtyWindows>();
     let dirty = dirty_windows.0.lock().unwrap();
@@ -111,19 +213,19 @@ fn advance_quit(app: &tauri::AppHandle) {
     // Nothing left to ask about — the dirty map is genuinely empty, so
     // ExitRequested's own check (in run()'s event handler below) will see
     // that and let this exit through instead of bouncing it back here.
-    app.state::<QuitInProgress>().0.store(false, Ordering::SeqCst);
+    *app.state::<PendingFlow>().0.lock().unwrap() = None;
     app.exit(0);
     return;
   };
 
   let Some(window) = app.get_webview_window(&label) else {
     // The map is stale — the window closed through some other route
-    // (Close Window, the traffic light) without on_window_event's cleanup
-    // having run yet, or in the gap between the lock above and here. Drop
-    // the entry and move on rather than getting stuck asking about a
-    // window that no longer exists.
+    // (Close Tab, Close Window, the traffic light) without
+    // on_window_event's cleanup having run yet, or in the gap between the
+    // lock above and here. Drop the entry and move on rather than getting
+    // stuck asking about a window that no longer exists.
     app.state::<DirtyWindows>().0.lock().unwrap().remove(&label);
-    advance_quit(app);
+    advance_quit_step(app);
     return;
   };
 
@@ -142,16 +244,80 @@ fn advance_quit(app: &tauri::AppHandle) {
   let _ = app.emit_to(&label, "menu-quit", ());
 }
 
-/// Opens `path` in a brand-new window. This is a command (rather than
-/// something Rust decides on its own, the way File > New does) because
-/// *whether* to open a new window at all is Open's call, not New's: Open
-/// reuses the current window when it's a blank, untouched Untitled
+/// Close Window's own step of `advance_flow`: walks `Flow::CloseGroup`'s
+/// `remaining` labels in order — the tab group as it stood the moment
+/// Cmd-Shift-W was pressed, see `close_window_group`/`tab_group_labels` for
+/// why that list isn't re-queried mid-walk. A clean tab is destroyed
+/// immediately with no prompt; the first dirty one found stops the loop and
+/// asks its frontend to run the same unsaved-changes prompt Close Tab uses
+/// (`flow_response` destroys it once that resolves, then calls back into
+/// `advance_flow` to continue from where this left off).
+fn advance_close_group_step(app: &tauri::AppHandle) {
+  loop {
+    let next = {
+      let flow = app.state::<PendingFlow>();
+      let mut guard = flow.0.lock().unwrap();
+      let Some(Flow::CloseGroup(remaining)) = guard.as_mut() else {
+        return; // flow was cancelled or finished out from under this call
+      };
+      if remaining.is_empty() {
+        None
+      } else {
+        Some(remaining.remove(0))
+      }
+    };
+
+    let Some(label) = next else {
+      // Every tab in the group is closed — nothing left to prompt.
+      *app.state::<PendingFlow>().0.lock().unwrap() = None;
+      return;
+    };
+
+    let Some(window) = app.get_webview_window(&label) else {
+      // Already closed through some other route (its own Close Tab, the
+      // traffic light, ...) between when the group was captured and now.
+      continue;
+    };
+
+    let is_dirty = app
+      .state::<DirtyWindows>()
+      .0
+      .lock()
+      .unwrap()
+      .get(&label)
+      .copied()
+      .unwrap_or(false);
+
+    if !is_dirty {
+      let _ = window.destroy();
+      continue;
+    }
+
+    let _ = window.set_focus();
+    let _ = app.emit_to(&label, "menu-close-window-group", ());
+    return;
+  }
+}
+
+/// Opens `path` as a new tab, grouped into the tab bar of the window that
+/// invoked this command (see `group_as_tab`). This is a command (rather
+/// than something Rust decides on its own, the way File > New does)
+/// because *whether* to open a new tab at all is Open's call, not New's:
+/// Open reuses the current tab when it's a blank, untouched Untitled
 /// document, and only the frontend (document.ts) knows that dirty/path
-/// state. Rust's job here is just spawning the window once the frontend
-/// has already decided one is needed.
+/// state. Rust's job here is just spawning the tab, grouped with the
+/// window that asked for it, once the frontend has already decided one is
+/// needed.
+///
+/// `window` is resolved by Tauri from the invoking webview itself (see the
+/// `CommandArg` impl for `WebviewWindow` in the tauri crate), not
+/// `focused_window(app)` — the two are normally the same window, but only
+/// the former is guaranteed to still be accurate by the time this async
+/// command actually runs, after the native Open dialog awaited in
+/// `openDocument()` (document.ts) has already closed.
 #[tauri::command]
-fn open_path_in_new_window(app: tauri::AppHandle, path: String) -> Result<(), String> {
-  create_document_window(&app, Some(&path)).map_err(|e| e.to_string())
+fn open_path_in_new_tab(app: tauri::AppHandle, window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+  create_document_window(&app, Some(&path), Some(&window)).map_err(|e| e.to_string())
 }
 
 /// Finds whichever webview window currently has OS focus.
@@ -168,7 +334,18 @@ fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     .find(|w| w.is_focused().unwrap_or(false))
 }
 
-/// Creates a new document window, optionally pre-loaded with `path`.
+/// Creates a new document window/tab, optionally pre-loaded with `path`,
+/// and optionally grouped as a new tab in `group_with`'s tab group.
+///
+/// `group_with: None` starts a brand-new tab group (File > New Window) —
+/// the window still gets `tabbing_identifier` below, so the user (or macOS
+/// itself, per its own "Prefer tabs when opening documents" setting) can
+/// still merge it into another group later; nothing here does that
+/// automatically for a standalone window.
+/// `group_with: Some(window)` adds the new window as a tab in `window`'s
+/// group (File > New, and File > Open when the invoking tab isn't a
+/// reusable blank — see `open_path_in_new_tab` and `openDocument()` in
+/// document.ts).
 ///
 /// `path` travels in the URL's query string (`index.html?path=...`)
 /// instead of as an event fired after the window is created: an event
@@ -176,17 +353,177 @@ fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
 /// silently dropping it. The query string has no such race — `main.ts`
 /// reads it synchronously at boot via `location.search`, before anything
 /// else runs.
-fn create_document_window(app: &tauri::AppHandle, path: Option<&str>) -> tauri::Result<()> {
+fn create_document_window(
+  app: &tauri::AppHandle,
+  path: Option<&str>,
+  group_with: Option<&tauri::WebviewWindow>,
+) -> tauri::Result<()> {
   let label = app.state::<WindowCounter>().next_label();
   let url = match path {
     Some(p) => format!("index.html?path={}", utf8_percent_encode(p, NON_ALPHANUMERIC)),
     None => "index.html".to_string(),
   };
-  WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+  let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
     .title("GeekityFlow")
     .inner_size(900.0, 700.0)
+    // Makes every document window eligible for the system's own tab
+    // affordances (drag-to-merge, Merge All Windows, "Prefer tabs when
+    // opening documents") even when group_with is None below — see the
+    // "why native tabs needed raw AppKit" design note in README.md for why
+    // *explicit* grouping (group_as_tab) is still needed on top of this
+    // rather than relying on tabbing_identifier alone.
+    .tabbing_identifier("com.geekity.flow.document")
     .build()?;
+
+  if let Some(target) = group_with {
+    group_as_tab(app, target, &window);
+  }
+
   Ok(())
+}
+
+/// Adds `new_window` to `target`'s native tab group via AppKit's
+/// `addTabbedWindow:ordered:` — tao/Tauri expose no such API themselves
+/// (see the "why native tabs needed raw AppKit" design note in README.md),
+/// so this drops to objc2 directly. `target`/`new_window` both already have
+/// resolved `ns_window()` handles by the time this runs, since `build()`
+/// has already returned for both.
+///
+/// Must run on the main thread — AppKit is not thread-safe — which is why
+/// the actual message send happens inside `run_on_main_thread` rather than
+/// directly in this function's body: `create_document_window` (and so this
+/// function) can be reached from a `#[tauri::command]`
+/// (`open_path_in_new_tab`), and Tauri does not guarantee commands run on
+/// the main thread, as well as from the menu-event handler, which in
+/// practice already does run there (see `close_window_group`'s doc comment)
+/// but which this doesn't rely on. `run_on_main_thread` itself runs the
+/// closure immediately, in place, when it's already called from the main
+/// thread (checked in tauri-runtime-wry's `send_user_message`), so this has
+/// no async delay in the common case — but the point of routing through it
+/// is exactly to not have to know or care which case applies.
+#[cfg(target_os = "macos")]
+fn group_as_tab(app: &tauri::AppHandle, target: &tauri::WebviewWindow, new_window: &tauri::WebviewWindow) {
+  let (Ok(target_ptr), Ok(new_ptr)) = (target.ns_window(), new_window.ns_window()) else {
+    return;
+  };
+  let target_ptr = SendableNsWindow(target_ptr);
+  let new_ptr = SendableNsWindow(new_ptr);
+  let _ = app.run_on_main_thread(move || {
+    // SAFETY: both pointers came from Tauri's own `ns_window()`, which
+    // returns the window's live NSWindow* for as long as the window
+    // exists — true here, since both windows are kept alive by this
+    // closure's own captures for the duration of the call. Casting a
+    // valid, correctly-typed Objective-C object pointer to `&NSWindow` and
+    // sending it `addTabbedWindow:ordered:` (a normal AppKit message, and
+    // one that doesn't mutate anything Rust owns) mirrors the pattern
+    // Tauri's own docs use for `ns_window()` itself (see `with_webview`'s
+    // example in the tauri crate's webview module). Now definitely on the
+    // main thread (see this function's own doc comment), so safe to touch
+    // AppKit at all.
+    let target_ns: &NSWindow = unsafe { &*target_ptr.ptr().cast() };
+    let new_ns: &NSWindow = unsafe { &*new_ptr.ptr().cast() };
+    target_ns.addTabbedWindow_ordered(new_ns, NSWindowOrderingMode::Above);
+  });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn group_as_tab(_app: &tauri::AppHandle, _target: &tauri::WebviewWindow, _new_window: &tauri::WebviewWindow) {
+  // Native window tabs are a macOS concept; elsewhere "New"/"Open"'s "new
+  // tab" is just an ordinary new window, so there's nothing to group.
+}
+
+/// The Tauri window labels of every tab in `window`'s tab group, including
+/// `window` itself, queried fresh from AppKit's `tabbedWindows` on every
+/// call — never cached in any Rust-side map — because the user can drag
+/// tabs between groups (or pull one out into its own window) entirely
+/// outside this app's control, and a cached map would silently drift out
+/// of sync with reality the first time that happens. See the "why group
+/// membership is queried, not tracked" design note in README.md.
+///
+/// Must run on the main thread; see `group_as_tab`'s doc comment for why
+/// the AppKit query itself happens inside `run_on_main_thread` rather than
+/// here directly, and why that's safe regardless of which thread called
+/// this function. The `mpsc` round trip is what lets this function still
+/// return a plain `Vec<String>` despite the query itself running inside a
+/// `FnOnce() + Send + 'static` closure with no return value of its own.
+#[cfg(target_os = "macos")]
+fn tab_group_labels(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Vec<String> {
+  let fallback = vec![window.label().to_string()];
+  let Ok(target_ptr) = window.ns_window() else {
+    return fallback;
+  };
+
+  // Gathered before hopping to the main thread so the closure below only
+  // has to compare already-known pointers, not call back into `app`.
+  let handles: Vec<(String, SendableNsWindow)> = app
+    .webview_windows()
+    .into_iter()
+    .filter_map(|(label, w)| w.ns_window().ok().map(|ptr| (label, SendableNsWindow(ptr))))
+    .collect();
+  let target_ptr = SendableNsWindow(target_ptr);
+
+  let (tx, rx) = std::sync::mpsc::channel();
+  let _ = app.run_on_main_thread(move || {
+    // SAFETY: see group_as_tab's SAFETY comment — same reasoning, applied
+    // to `tabbedWindows` (a read-only query) instead of
+    // `addTabbedWindow:ordered:`.
+    let labels = unsafe {
+      let target_ns: &NSWindow = &*target_ptr.ptr().cast();
+      match target_ns.tabbedWindows() {
+        Some(tabbed) => tabbed
+          .iter()
+          .filter_map(|tab: Retained<NSWindow>| {
+            let tab_ptr = Retained::as_ptr(&tab) as *mut std::ffi::c_void;
+            handles
+              .iter()
+              .find(|(_, h)| h.0 == tab_ptr)
+              .map(|(label, _)| label.clone())
+          })
+          .collect::<Vec<_>>(),
+        // No tab bar showing — either "Prefer tabs" is off and this window
+        // was never grouped, or it's the sole tab left in its own group.
+        // Either way the group is just this one window, reported via the
+        // `fallback` this closure's caller falls back to below rather than
+        // from in here (an empty Vec sent over `tx` and an unreachable
+        // main thread are otherwise indistinguishable to the receiver).
+        None => Vec::new(),
+      }
+    };
+    let _ = tx.send(labels);
+  });
+
+  match rx.recv() {
+    Ok(labels) if !labels.is_empty() => labels,
+    _ => fallback,
+  }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn tab_group_labels(_app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Vec<String> {
+  // No native tab groups outside macOS — "the group" is just this window.
+  vec![window.label().to_string()]
+}
+
+/// Starts the Close Window flow (Cmd-Shift-W): closes every tab in
+/// `window`'s tab group, prompting one at a time for whichever are dirty.
+/// Reuses `advance_flow`/`flow_response` (see `PendingFlow`'s doc comment)
+/// instead of a second copy of Quit's walk-and-prompt logic — the
+/// invariants (re-entrancy, "only a window that still exists may veto")
+/// are the same either way.
+fn close_window_group(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+  let flow = app.state::<PendingFlow>();
+  {
+    let mut guard = flow.0.lock().unwrap();
+    if guard.is_some() {
+      // A flow (this one or Quit) is already in progress — let it finish
+      // instead of stacking a second walk on top of it. Same guard Quit's
+      // own on_menu_event branch already needed for Cmd-Q pressed twice.
+      return;
+    }
+    let labels = tab_group_labels(app, window);
+    *guard = Some(Flow::CloseGroup(labels));
+  }
+  advance_flow(app);
 }
 
 /// Builds the app-wide menu. This lives in Rust, not JS: a JS menu's
@@ -195,14 +532,15 @@ fn create_document_window(app: &tauri::AppHandle, path: Option<&str>) -> tauri::
 /// specific (Save would save whichever document happened to build the
 /// menu, not the focused one) — and once that window closes, its JS
 /// context is gone and the menu stops working at all. Native predefined
-/// items (Cut/Copy/Paste, Close Window, ...) don't have this problem:
-/// macOS routes them through the responder chain to the focused window on
-/// its own. Custom items (New, Open, Save, Save As, Keyboard Shortcuts,
-/// Quit) are routed explicitly in `on_menu_event` below, by resolving the
-/// focused window and emitting *to* it specifically — Quit is the one
-/// exception that doesn't resolve a focused window at all, since it may
-/// need to work through *several* windows in turn; see its own doc comment
-/// below and `advance_quit`.
+/// items (Cut/Copy/Paste, Close Tab, ...) don't have this problem: macOS
+/// routes them through the responder chain to the focused window on its
+/// own. Custom items (New, Open, New Window, Close Window, Save, Save As,
+/// Keyboard Shortcuts, Quit) are routed explicitly in `on_menu_event`
+/// below, by resolving the focused window and emitting *to* it
+/// specifically — Quit and Close Window are the two exceptions that don't
+/// stop at resolving a single focused window, since each may need to work
+/// through *several* windows in turn; see their own doc comments below,
+/// `advance_flow`, and `close_window_group`.
 fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
   // Custom item, NOT the predefined `.quit()`, even though every other
   // native item in this submenu is predefined. The predefined Quit item
@@ -235,15 +573,28 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
     .item(&quit_item)
     .build()?;
 
-  // Cmd-N/O/S/Shift-S are all safe accelerators: they're absent from
-  // CONCORD_KEYSTROKES (packages/outliner/src/util.ts), so the outliner's
-  // keydown handler falls into its `default:` branch and never calls
+  // Cmd-N/O/S/Shift-S/Shift-N/Shift-W are all safe accelerators: they're
+  // absent from CONCORD_KEYSTROKES (packages/outliner/src/util.ts) — which
+  // has no Shift-modified entries at all — so the outliner's keydown
+  // handler falls into its `default:` branch and never calls
   // preventDefault. Nothing here shadows an outliner keystroke.
   let new_item = MenuItemBuilder::with_id("new", "New")
     .accelerator("CmdOrCtrl+N")
     .build(app)?;
   let open_item = MenuItemBuilder::with_id("open", "Open…")
     .accelerator("CmdOrCtrl+O")
+    .build(app)?;
+  let new_window_item = MenuItemBuilder::with_id("new-window", "New Window")
+    .accelerator("CmdOrCtrl+Shift+N")
+    .build(app)?;
+  // Custom, unlike Close Tab below: closing every tab in the focused
+  // window's *group* needs Rust-side orchestration (AppKit's
+  // tabbedWindows, then the same one-at-a-time unsaved-changes walk Quit
+  // uses) that no predefined item can do — see close_window_group's doc
+  // comment, reached from the "close-window" branch in on_menu_event
+  // below.
+  let close_window_item = MenuItemBuilder::with_id("close-window", "Close Window")
+    .accelerator("CmdOrCtrl+Shift+W")
     .build(app)?;
   let save_item = MenuItemBuilder::with_id("save", "Save")
     .accelerator("CmdOrCtrl+S")
@@ -256,14 +607,19 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
     .item(&new_item)
     .item(&open_item)
     .separator()
+    .item(&new_window_item)
+    // Predefined, with custom text ("Close Tab" instead of the OS default
+    // "Close Window" — Close Window above is now a different, custom
+    // item) rather than a custom item routed through on_menu_event: see
+    // build_menu's doc comment above for why native items can target the
+    // focused window without any Rust-side routing. Its accelerator
+    // (Cmd-W) is assigned automatically by macOS for this predefined role
+    // and is absent from CONCORD_KEYSTROKES too.
+    .close_window_with_text("Close Tab")
+    .item(&close_window_item)
+    .separator()
     .item(&save_item)
     .item(&save_as_item)
-    .separator()
-    // Predefined rather than a custom item routed through on_menu_event:
-    // see build_menu's doc comment above for why native items can target
-    // the focused window without any Rust-side routing. Its accelerator
-    // (Cmd-W) is absent from CONCORD_KEYSTROKES too.
-    .close_window()
     .build()?;
 
   // Cut/Copy/Paste ONLY — do not add Undo or Select All here. On macOS the
@@ -418,12 +774,28 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
     .item(&reorg_sort_item)
     .build()?;
 
+  // Minimize/Zoom are the two predefined items every native macOS app's
+  // Window menu starts with; everything below them — Select Next/Previous
+  // Tab, Merge All Windows, Move Tab to New Window, the list of open
+  // windows/tabs, ... — is macOS's own automatic addition once this
+  // submenu is registered as the app's Window menu just below, via the
+  // one `set_as_windows_menu_for_nsapp` call. That's the whole
+  // implementation: no custom "Select Next Tab" items, no raw AppKit,
+  // unlike the tab-grouping work in create_document_window/
+  // close_window_group above — see the "why native tabs needed raw
+  // AppKit" design note in README.md for why this call is the cheap case
+  // and grouping/group-membership weren't.
+  let window_submenu = SubmenuBuilder::new(app, "Window").minimize().maximize().build()?;
+  #[cfg(target_os = "macos")]
+  window_submenu.set_as_windows_menu_for_nsapp()?;
+
   MenuBuilder::new(app)
     .item(&app_submenu)
     .item(&file_submenu)
     .item(&edit_submenu)
     .item(&outliner_submenu)
     .item(&reorg_submenu)
+    .item(&window_submenu)
     .item(&help_submenu)
     .build()
 }
@@ -442,7 +814,7 @@ pub fn run() {
 
       app.manage(WindowCounter(AtomicU32::new(1)));
       app.manage(DirtyWindows(Mutex::new(HashMap::new())));
-      app.manage(QuitInProgress(AtomicBool::new(false)));
+      app.manage(PendingFlow(Mutex::new(None)));
 
       let menu = build_menu(app.handle())?;
       app.set_menu(menu)?;
@@ -450,32 +822,63 @@ pub fn run() {
       app.on_menu_event(move |app, event| {
         let id = event.id().as_ref();
 
-        // New has no per-document state to read, so it's handled entirely
-        // here with no round trip to any frontend — and unlike the items
-        // below, it doesn't depend on a window being focused at all.
-        if id == "new" {
-          if let Err(err) = create_document_window(app, None) {
+        // New Window has no per-document state to read and, unlike New
+        // below, no need to know what's focused either — it never groups
+        // with anything.
+        if id == "new-window" {
+          if let Err(err) = create_document_window(app, None, None) {
             log::error!("failed to open new window: {err}");
+          }
+          return;
+        }
+
+        // New has no per-document state to read, so it's handled entirely
+        // here with no round trip to any frontend. It DOES care what's
+        // focused now, unlike before tabs existed — the new tab joins the
+        // focused window's group — but tolerates there being none (falls
+        // back to a standalone window, same as New Window above) rather
+        // than doing nothing.
+        if id == "new" {
+          let target = focused_window(app);
+          if let Err(err) = create_document_window(app, None, target.as_ref()) {
+            log::error!("failed to open new tab: {err}");
+          }
+          return;
+        }
+
+        // Close Window doesn't act on just "the document the user is
+        // looking at" either — it needs the focused window's *tab group*,
+        // then works through however many of those tabs are dirty one at a
+        // time, same shape as Quit below. See close_window_group's doc
+        // comment.
+        if id == "close-window" {
+          if let Some(window) = focused_window(app) {
+            close_window_group(app, &window);
           }
           return;
         }
 
         // Quit doesn't act on "the document the user is looking at" either
         // — it may need to work through *several* dirty windows in turn,
-        // not just the focused one, so it's handled by advance_quit
+        // not just the focused one, so it's handled by advance_flow
         // instead of falling into the focused-window branch below. See the
         // "quit" MenuItemBuilder's doc comment in build_menu for why this
-        // is a custom item at all.
+        // is a custom item at all, and PendingFlow's doc comment for how
+        // this and Close Window above share the same walk-and-prompt
+        // machinery.
         if id == "quit" {
-          let quitting = app.state::<QuitInProgress>();
-          if quitting.0.swap(true, Ordering::SeqCst) {
-            // A quit flow is already in progress — e.g. Cmd-Q pressed
-            // twice in a row, or again while a dirty-window prompt from
-            // the first press is still open. Let that flow finish instead
-            // of stacking a second one on top of it.
+          let flow = app.state::<PendingFlow>();
+          let mut guard = flow.0.lock().unwrap();
+          if guard.is_some() {
+            // A flow (this or Close Window) is already in progress — e.g.
+            // Cmd-Q pressed twice in a row, or again while a dirty-window
+            // prompt from the first press is still open. Let that flow
+            // finish instead of stacking a second one on top of it.
             return;
           }
-          advance_quit(app);
+          *guard = Some(Flow::Quit);
+          drop(guard);
+          advance_flow(app);
           return;
         }
 
@@ -593,9 +996,9 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       read_file,
       write_file,
-      open_path_in_new_window,
+      open_path_in_new_tab,
       set_dirty,
-      quit_response
+      flow_response
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")
@@ -607,20 +1010,22 @@ pub fn run() {
       // stop an exit that would otherwise discard unsaved changes.
       //
       // `code: None` is an exit "requested by user interaction" — in
-      // practice here, the OS-driven "last window closed" exit, since
-      // Quit itself never reaches the OS anymore (it's the custom item
-      // above). By the time that fires, the closing window's own guard
-      // (`onCloseRequested` in main.ts) has already prompted if needed,
-      // and this crate's on_window_event Destroyed handler above has
-      // already dropped that window's entry — so checking the dirty map
-      // here is correct for both Cmd-Q *and* the last-window-close case.
+      // practice here, the OS-driven "last window closed" exit, since Quit
+      // itself never reaches the OS anymore (it's the custom item above).
+      // By the time that fires, whichever route closed the window —
+      // `onCloseRequested` in main.ts (Close Tab / the traffic light) or
+      // `flow_response`'s own `destroy()` call above (Close Window's
+      // group walk) — has already prompted if needed, and this crate's
+      // on_window_event Destroyed handler above has already dropped that
+      // window's entry — so checking the dirty map here is correct for
+      // Cmd-Q, Close Window, *and* the plain last-window-close case alike.
       //
       // `code: Some(_)` is a *programmatic* exit — the only one this crate
-      // ever triggers is advance_quit's `app.exit(0)`, which only runs once
-      // the dirty map is confirmed empty. Skipping the dirty check entirely
-      // for Some(_) is what keeps that call from deadlocking against this
-      // very handler: prevent_exit() firing on our own already-verified
-      // exit would leave the app unquittable.
+      // ever triggers is advance_quit_step's `app.exit(0)`, which only runs
+      // once the dirty map is confirmed empty. Skipping the dirty check
+      // entirely for Some(_) is what keeps that call from deadlocking
+      // against this very handler: prevent_exit() firing on our own
+      // already-verified exit would leave the app unquittable.
       if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
         if code.is_none() {
           // Only a dirty window that STILL EXISTS may veto the exit. The

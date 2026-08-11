@@ -36,20 +36,23 @@ if (bootPath) void openPathAtBoot(bootPath)
 const appWindow = getCurrentWindow()
 
 // True while this window has an unsaved-changes prompt open, whether from
-// Close Window/the traffic light (closeWindow()) or from Cmd-Q (handleMenuQuit()
-// below). Guards against the two racing each other and stacking a second
-// <dialog> on top of the first — e.g. Cmd-Q arriving for this window while
-// its own Close Window prompt is still awaiting an answer. Rust's
-// QuitInProgress flag (src-tauri/src/lib.rs) already stops a second Cmd-Q
-// from starting a second *quit flow*, but that doesn't cover this
-// window-local case, since Close Window's prompt isn't part of any quit
-// flow at all.
+// Close Tab/the traffic light (closeTab()) or from a Rust-driven flow —
+// Cmd-Q or Close Window's tab-group walk (handleFlowPrompt() below).
+// Guards against these racing each other and stacking a second <dialog> on
+// top of the first — e.g. Cmd-Q arriving for this window while its own
+// Close Tab prompt is still awaiting an answer. Rust's PendingFlow state
+// (src-tauri/src/lib.rs) already stops a second Cmd-Q/Cmd-Shift-W from
+// starting a second *flow*, but that doesn't cover this window-local case,
+// since Close Tab's prompt isn't part of any Rust-driven flow at all.
 let unsavedPromptOpen = false
 
-// Shared by the Close Window menu item (via the 'menu-close-window'
-// listener below) and the native close button's guard further down, so
-// both routes run the same unsaved-changes prompt before actually closing.
-async function closeWindow(): Promise<void> {
+// Shared by the native close button's guard further down and Close Tab's
+// own native routing (a *predefined* menu item — see build_menu's
+// file_submenu doc comment in src-tauri/src/lib.rs — macOS's performClose:
+// already funnels both into the same onCloseRequested path below, so
+// neither needs its own listener here), so both routes run the same
+// unsaved-changes prompt before actually closing.
+async function closeTab(): Promise<void> {
   if (unsavedPromptOpen) return
   unsavedPromptOpen = true
   try {
@@ -70,31 +73,36 @@ async function closeWindow(): Promise<void> {
   }
 }
 
-// Rust's quit flow (advance_quit in src-tauri/src/lib.rs) emits this to one
-// dirty window at a time and waits for quit_response before moving on to
-// the next one or exiting — see the README's "Quit" design note for the
-// full flow. confirmQuit() (not confirmClose()) runs the actual prompt: it
-// reuses the same confirmDiscard() UI, but on "Don't Save" it also clears
-// this document's changed state, which confirmClose()'s callers don't need
-// since they destroy the window right after instead of leaving it open.
-async function handleMenuQuit(): Promise<void> {
+// Shared by Quit's per-window prompt and Close Window's per-tab prompt —
+// both are Rust-driven flows (advance_flow in src-tauri/src/lib.rs) that
+// emit an event to one window at a time and wait for flow_response before
+// moving on to the next window (or finishing) — see the README's "Quit"
+// design note for the full shape, which Close Window's tab-group walk
+// reuses. `confirm` is which prompt decides "is it safe to proceed":
+// confirmQuit() for Quit (it also clears this window's own changed state,
+// since Quit leaves the window open — see confirmQuit's own doc comment in
+// document.ts for why that matters there); confirmClose() for Close
+// Window (it doesn't need to clear anything itself, since Rust destroys
+// the window right after a truthy response — same as closeTab() above).
+async function handleFlowPrompt(confirm: () => Promise<boolean>): Promise<void> {
   if (unsavedPromptOpen) {
-    // Another prompt already owns this window's dialog (Close Window
-    // racing a Cmd-Q aimed at the same window — see unsavedPromptOpen's
-    // comment above). Report "cancel" rather than leaving Rust's quit flow
-    // waiting for a response that would otherwise never come: aborting the
-    // quit is always the safe outcome here, never a silent data loss.
-    await invoke('quit_response', { label: appWindow.label, proceed: false })
+    // Another prompt already owns this window's dialog (Close Tab racing
+    // a Rust-driven flow aimed at the same window — see
+    // unsavedPromptOpen's comment above). Report "cancel" rather than
+    // leaving Rust's flow waiting for a response that would otherwise
+    // never come: aborting is always the safe outcome here, never a
+    // silent data loss.
+    await invoke('flow_response', { label: appWindow.label, proceed: false })
     return
   }
   unsavedPromptOpen = true
   let proceed: boolean
   try {
-    proceed = await confirmQuit()
+    proceed = await confirm()
   } finally {
     unsavedPromptOpen = false
   }
-  await invoke('quit_response', { label: appWindow.label, proceed })
+  await invoke('flow_response', { label: appWindow.label, proceed })
 }
 
 // The app menu lives entirely in Rust (src-tauri/src/lib.rs) because a JS
@@ -114,12 +122,14 @@ void listen('menu-open', () => void openDocument())
 void listen('menu-save', () => void saveDocument())
 void listen('menu-save-as', () => void saveDocumentAs())
 void listen('menu-keyboard-shortcuts', () => void showShortcuts())
-void listen('menu-close-window', () => void closeWindow())
-// 'quit' is the one menu item Rust doesn't resolve a focused window for
-// before emitting (see build_menu's "quit" MenuItemBuilder doc comment) —
-// it's targeted at specific dirty windows one at a time instead, which may
-// or may not include this one.
-void listen('menu-quit', () => void handleMenuQuit())
+// 'menu-quit' and 'menu-close-window-group' are the two events Rust
+// doesn't resolve a single focused window for before emitting (see
+// build_menu's "quit"/"close-window" doc comments) — each is targeted at
+// specific windows one at a time instead, walking through a dirty-window
+// flow (advance_flow in src-tauri/src/lib.rs) that may or may not include
+// this window on any given step.
+void listen('menu-quit', () => void handleFlowPrompt(confirmQuit))
+void listen('menu-close-window-group', () => void handleFlowPrompt(confirmClose))
 
 // Outliner menu: every no-argument operation maps straight to a library
 // call, so they're driven from a table instead of a growing if/else chain —
@@ -186,5 +196,5 @@ for (const [event, action] of Object.entries(REORG_ACTIONS)) {
 // at all, so it needs its own guard here.
 void appWindow.onCloseRequested(async (event) => {
   event.preventDefault()
-  await closeWindow()
+  await closeTab()
 })

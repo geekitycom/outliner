@@ -27,3 +27,19 @@ tauri-plugin-dialog = "2"
 # Percent-encodes a document path into the query string used to hand it off
 # to a newly-created window — see create_document_window() in src/lib.rs.
 percent-encoding = "2"
+
+# Native window tabs (grouping windows into one tab bar) has no tao/Tauri
+# API of its own — tao exposes setTabbingIdentifier only, never
+# addTabbedWindow:ordered: or tabbedWindows — so grouping/ungrouping tabs
+# and querying group membership goes straight through AppKit via objc2. The
+# versions below are pinned to what's already resolved transitively through
+# tao/wry (see Cargo.lock) so cargo unifies onto a single copy of each
+# instead of building a second: two copies of objc2 would mean two
+# incompatible NSWindow types between this crate and tao's.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.4"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+  "std",
+  "NSWindow",
+  "NSGraphics",
+] }
