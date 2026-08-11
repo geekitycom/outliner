@@ -9,9 +9,9 @@
 
 /**
  * name -> inner SVG markup (24x24 viewBox). All glyphs are from Mono Icons
- * (Iconify prefix `mi`) for a consistent monoline look, except `rss` and
- * `twitter`, which Mono Icons doesn't include (kept as hand-drawn fallbacks).
- * Fills are opaque so the shapes read cleanly as CSS masks.
+ * (Iconify prefix `mi`) for a consistent monoline look, except `rss`, which
+ * Mono Icons has no glyph for and so comes from Material Design Icons
+ * (`mdi`). Fills are opaque so the shapes read cleanly as CSS masks.
  */
 export const ICONS: Record<string, string> = {
   // mi:caret-right (the default bullet), scaled up ~1.5x about center so the
@@ -58,6 +58,10 @@ export const ICONS: Record<string, string> = {
     '<path d="M9 2a1 1 0 0 1 1 1v1h4V3a1 1 0 1 1 2 0v1h3a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3V3a1 1 0 0 1 1-1M8 6H5v3h14V6h-3v1a1 1 0 1 1-2 0V6h-4v1a1 1 0 0 1-2 0zm11 5H5v8h14z"/>',
   // mdi:rss — Mono Icons has no RSS glyph, so this one is Material Design Icons.
   rss: '<path d="M6.18 15.64a2.18 2.18 0 0 1 2.18 2.18C8.36 19 7.38 20 6.18 20C5 20 4 19 4 17.82a2.18 2.18 0 0 1 2.18-2.18M4 4.44A15.56 15.56 0 0 1 19.56 20h-2.83A12.73 12.73 0 0 0 4 7.27zm0 5.66a9.9 9.9 0 0 1 9.9 9.9h-2.83A7.07 7.07 0 0 0 4 12.93z"/>',
+  // mi:text — a serif capital T. Not in appTypeIcons below (that map is a
+  // faithful port of the original concordutils.js), so it's here for
+  // consumers to wire up through `prefs.typeIcons` themselves.
+  text: '<path d="M5 6a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v1a1 1 0 1 1-2 0V6h-4v12h1a1 1 0 1 1 0 2h-4a1 1 0 1 1 0-2h1V6H7v1a1 1 0 0 1-2 0z"/>',
 }
 
 /** Default icon name for a plain node. */
