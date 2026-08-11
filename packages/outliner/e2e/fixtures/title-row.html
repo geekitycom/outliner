@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>e2e: title row</title>
+    <link rel="stylesheet" href="/dist/outliner.css" />
+    <script src="/dist/outliner.global.js"></script>
+  </head>
+  <body>
+    <div id="outliner"></div>
+    <script>
+      // prefs.titleRow is off by default, so it has to be asked for.
+      const o = Outliner.createOutliner(document.getElementById('outliner'), {
+        prefs: { titleRow: true },
+      })
+      o.loadOpml(
+        '<opml version="2.0"><head><title>My Document</title></head><body>' +
+          '<outline text="a"><outline text="a1"/></outline></body></opml>',
+      )
+      window.outliner = o
+    </script>
+  </body>
+</html>

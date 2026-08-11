@@ -22,7 +22,14 @@ export function installGlobals(): void {
       target.matches('textarea') ||
       target.closest('a') ||
       target.classList.contains('dropdown-menu') ||
-      target.closest('.dropdown-menu')
+      target.closest('.dropdown-menu') ||
+      // The title row (prefs.titleRow) is an editable field that lives
+      // *outside* .concord-root, so without this it lands in the branch
+      // below and getFocusRoot() -> setFocusRoot() -> pasteBinFocus() yanks
+      // focus straight back to the pasteBin — the row could never be typed
+      // in at all. It belongs with the other entries here for the same
+      // reason they're listed: elements that own their own focus.
+      target.closest('.concord-title-row')
     ) {
       return
     }

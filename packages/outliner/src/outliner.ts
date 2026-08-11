@@ -160,6 +160,17 @@ export class Outliner {
     if (!ready || typeof navigator === 'undefined') return
     if (/Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent)) return
     if (!this.root.isConnected) return
+    // Never steal focus away from the title row (prefs.titleRow) while the
+    // user is in it. Three separate paths reach here — setFocusRoot(),
+    // resumeListening(), and the document-level mouseup in globals.ts — and
+    // they chain: focusCursor() below blurs the row, the row's blur commits,
+    // commit() calls resumeListening(), which lands back here. The row could
+    // never be clicked into at all. Guarding the one place they all funnel
+    // through fixes every path at once, where patching each caller wouldn't.
+    // Committing is unaffected: the row blurs itself *before* commit() runs,
+    // so by then this check passes and focus returns to the outline.
+    const active = typeof document !== 'undefined' ? document.activeElement : null
+    if (active && active.closest('.concord-title-row')) return
     const node = this.op.getCursor()
     if (!node) return
     const rect = node.getBoundingClientRect()

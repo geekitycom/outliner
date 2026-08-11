@@ -13,9 +13,22 @@ body {
   flex-direction: column;
 }
 
-#app > div {
+/* The outline itself is the one child that grows and scrolls. This targets
+   `.concord-root` (the library's <ol>) rather than `#app > div`, which is
+   what it used to say: that selector never matched the outline at all — only
+   the library's 1x1 absolutely-positioned pasteBin, where flex does nothing.
+   It became actively wrong when the title row arrived, since the row IS a
+   direct child <div>, so it took the `flex: 1` and stretched to fill the
+   window, pushing the outline to the bottom. */
+#app > .concord-root {
   flex: 1;
   overflow: auto;
+}
+
+/* Sits at its natural single-row height above the outline, never stretched
+   or squashed by the flex layout. */
+#app > .concord-title-row {
+  flex: none;
 }
 
 /* --- modal.ts: the unsaved-changes prompt, and later the shortcuts sheet - */
