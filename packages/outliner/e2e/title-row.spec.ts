@@ -2,7 +2,13 @@ import { test, expect, type Page } from '@playwright/test'
 
 /** The page's outliner instance, typed the way the other specs do it. */
 type PageOutliner = {
-  outliner: { toOpml(): string; getTitle(): string; loadOpml(x: string): void }
+  outliner: {
+    toOpml(): string
+    getTitle(): string
+    loadOpml(x: string): void
+    hoist(): boolean
+    deHoist(): boolean
+  }
 }
 
 function toOpml(page: Page): Promise<string> {
@@ -103,6 +109,37 @@ test.describe('title row', () => {
 
     // Saving straight from the field must not write the previous title.
     expect(await toOpml(page)).toContain('<title>Unblurred</title>')
+  })
+
+  test('an edit started on the title lands on the title, even if a hoist intervenes', async ({
+    page,
+  }) => {
+    await page.goto('/e2e/fixtures/title-row.html')
+    const title = page.locator('.concord-title-row .concord-text')
+
+    // Start editing the *document title*...
+    await title.click()
+    await page.keyboard.press('ControlOrMeta+a')
+    await page.keyboard.type('My Notes')
+
+    // ...lose focus the way a native menu does (no blur), so the pending edit
+    // is settled by the next refresh rather than by the field itself...
+    await stealFocusWithoutBlur(page)
+
+    // ...then hoist. That refresh now settles the edit, and the row's target
+    // has already flipped from the title to the hoisted headline. Resolving
+    // the target at commit time wrote "My Notes" into the newly hoisted
+    // headline — renaming the wrong thing and dropping the title edit. The
+    // target is captured when the edit begins, so it still lands on the title.
+    await page.evaluate(() => (window as unknown as PageOutliner).outliner.hoist())
+
+    expect(
+      await page.evaluate(() => (window as unknown as PageOutliner).outliner.getTitle()),
+    ).toBe('My Notes')
+
+    // ...and the hoisted headline keeps its own text.
+    await page.evaluate(() => (window as unknown as PageOutliner).outliner.deHoist())
+    expect(await toOpml(page)).toContain('text="a"')
   })
 
   test('typing in the row does not reach the outline', async ({ page }) => {

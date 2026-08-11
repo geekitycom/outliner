@@ -40,6 +40,9 @@ export class TitleRow {
   private readonly text: HTMLElement
   private editing = false
   private previousText = ''
+  /** The headline this edit began on, or null when it began on the document
+   *  title. Resolved at beginEdit, not at commit — see beginEdit. */
+  private editTarget: HTMLLIElement | null = null
 
   constructor(
     private o: Outliner,
@@ -114,6 +117,13 @@ export class TitleRow {
     if (this.o.prefs().readonly) return
     this.editing = true
     this.previousText = this.text.textContent ?? ''
+    // Capture *what is being edited* now, not when the edit commits. The row
+    // shows the document title at the root and the hoisted headline while
+    // hoisted, and a hoist can land between the two: typing a title and then
+    // hoisting used to write that text into the newly hoisted headline
+    // instead — renaming the wrong thing and losing the title edit. The
+    // target is whatever the field was showing when the user started typing.
+    this.editTarget = this.o.op.hoistedNode()
     stopListening()
   }
 
@@ -135,11 +145,17 @@ export class TitleRow {
   private commit(): void {
     if (!this.editing) return
     this.editing = false
+    const node = this.editTarget
+    this.editTarget = null
     resumeListening()
     const value = this.text.textContent ?? ''
     if (value === this.previousText) return // no-op edit: don't dirty the document
-    const node = this.o.op.hoistedNode()
     if (node) {
+      // No isConnected guard here, deliberately: a hoisted headline is
+      // *supposed* to be detached. applyHoist() stashes the displaced part of
+      // the tree in a DocumentFragment and restores it on de-hoist, so the
+      // node this edit targets is off-document for the whole hoist. Skipping
+      // detached nodes silently dropped every rename made while hoisted.
       const t = textOf(node)
       if (t) t.innerHTML = this.o.editor.escape(value)
     } else {
@@ -150,6 +166,7 @@ export class TitleRow {
 
   private cancel(): void {
     this.editing = false
+    this.editTarget = null
     this.text.textContent = this.previousText
     resumeListening()
     this.text.blur() // no-op on commit(): editing is already false
