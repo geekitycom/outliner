@@ -165,6 +165,21 @@ and again, conditionally, on every window's `Focused(true)` event as a backstop 
 AppKit forms on its own — see design note 11 below for why that backstop is conditional, not
 unconditional, and for a known gap in it.
 
+**`toggleTabBar:` does nothing on its own here — `enable_automatic_window_tabbing()` is what makes
+it work.** `tao` calls `NSWindow.setAllowsAutomaticWindowTabbing(false)` inside *every* window it
+builds (`platform_impl/macos/window.rs`, gated on an `automatic_tabbing` attribute Tauri doesn't
+expose). With that off, AppKit refuses to show a tab bar for a group of one and `toggleTabBar:`
+silently no-ops — instrumenting the call showed `isTabBarVisible()` reading back `false`
+immediately after it. Explicit `addTabbedWindow:ordered:` is unaffected, which is why tabs could
+be *created* while a lone window still showed no bar to drag onto. Because tao flips the flag off
+again on every `build()`, it has to be re-enabled per window rather than once at startup.
+
+**A debugging trap if you ever revisit this:** macOS persists "show tab bar" per app, so once the
+bar has been shown successfully even once, it stays visible across launches — including launches
+of a build where this fix is disabled. An A/B test run after the fix first worked reported the bar
+visible *without* it. That means the absence of a regression on this machine proves nothing; test
+a change to this code on a fresh app identity, or by explicitly hiding the bar first.
+
 ## Menu layout
 
 - **GeekityFlow** (macOS app menu) — About, Services, Hide/Hide Others/Show All (all predefined),

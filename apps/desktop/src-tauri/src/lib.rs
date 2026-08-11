@@ -18,6 +18,8 @@ use tauri::{Emitter, Manager, WebviewUrl};
 #[cfg(target_os = "macos")]
 use objc2::rc::Retained;
 #[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
 use objc2_app_kit::{NSWindow, NSWindowOrderingMode};
 
 #[tauri::command]
@@ -497,6 +499,7 @@ fn assert_tab_bar_visible(app: &tauri::AppHandle, ns_window_ptr: *mut std::ffi::
     // to `tabGroup`/`isTabBarVisible`/`toggleTabBar` instead of
     // `addTabbedWindow:ordered:`.
     let ns_window: &NSWindow = unsafe { &*ptr.ptr().cast() };
+    enable_automatic_window_tabbing();
     let Some(tab_group) = ns_window.tabGroup() else {
       return;
     };
@@ -504,6 +507,31 @@ fn assert_tab_bar_visible(app: &tauri::AppHandle, ns_window_ptr: *mut std::ffi::
       ns_window.toggleTabBar(None);
     }
   });
+}
+
+/// Re-enables AppKit's automatic window tabbing, which `tao` turns *off*
+/// during every window it builds (`setAllowsAutomaticWindowTabbing(false)`
+/// in its `platform_impl/macos/window.rs`, gated on an `automatic_tabbing`
+/// attribute Tauri does not expose).
+///
+/// This is what makes `toggleTabBar:` work at all. With automatic tabbing
+/// disabled, AppKit refuses to show a tab bar for a group of one and
+/// `toggleTabBar:` silently does nothing — `isTabBarVisible()` reads back
+/// `false` immediately after the call, which is exactly the symptom that
+/// led here. Explicit `addTabbedWindow:ordered:` keeps working regardless,
+/// which is why tabs could be *created* while a lone window still showed no
+/// bar to drag onto.
+///
+/// It has to be re-asserted per window rather than once at startup,
+/// because tao flips it back off inside every `build()`.
+///
+/// Only call from the main thread — `MainThreadMarker::new()` returns
+/// `None` elsewhere, and this then does nothing rather than panicking.
+#[cfg(target_os = "macos")]
+fn enable_automatic_window_tabbing() {
+  if let Some(mtm) = MainThreadMarker::new() {
+    NSWindow::setAllowsAutomaticWindowTabbing(true, mtm);
+  }
 }
 
 // No non-macOS stub twin here (unlike group_as_tab/tab_group_labels above):
@@ -576,6 +604,10 @@ fn assert_tab_bar_visible_on_focus(app: &tauri::AppHandle, label: String, ns_win
     // when it has only one tab, which is exactly the behavior this app
     // wants overridden.
     if !tab_group.isTabBarVisible() {
+      // Same reason as in assert_tab_bar_visible: without this,
+      // toggleTabBar: is a no-op. Every window tao builds turns automatic
+      // tabbing back off, so it can't be enabled once and left alone.
+      enable_automatic_window_tabbing();
       ns_window.toggleTabBar(None);
     }
   });
