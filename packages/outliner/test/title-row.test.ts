@@ -14,6 +14,20 @@ function requireTitleRowText(o: Outliner): HTMLElement {
   return el
 }
 
+/**
+ * OPML with the `dateModified` header blanked out.
+ *
+ * outlineToXml() stamps `new Date().toUTCString()` on every call, at
+ * second resolution. Comparing two serializations raw would pass almost
+ * always and fail whenever the two calls happen to straddle a second tick —
+ * the worst kind of flake, since it is rare, timing-dependent, and looks
+ * like a real regression. Blanking the one genuinely time-varying header
+ * keeps the comparison exact everywhere it matters.
+ */
+function opmlSansTimestamp(xml: string): string {
+  return xml.replace(/<dateModified>[^<]*<\/dateModified>/, '<dateModified/>')
+}
+
 /** Click into the row, type `text`, then commit (Enter) or cancel (Escape). */
 function editTitleRow(o: Outliner, text: string, key: 'Enter' | 'Escape'): void {
   const el = requireTitleRowText(o)
@@ -116,7 +130,7 @@ describe('title row (opt-in via prefs.titleRow)', () => {
 
     const disabled = mount(doc)
 
-    expect(enabled.toOpml()).toBe(disabled.toOpml())
+    expect(opmlSansTimestamp(enabled.toOpml())).toBe(opmlSansTimestamp(disabled.toOpml()))
   })
 
   it('toOpml() output is unaffected by enabling the row even while hoisted', () => {
@@ -130,7 +144,7 @@ describe('title row (opt-in via prefs.titleRow)', () => {
     const disabled = mount(doc)
     disabled.hoist()
 
-    expect(enabled.toOpml()).toBe(disabled.toOpml())
+    expect(opmlSansTimestamp(enabled.toOpml())).toBe(opmlSansTimestamp(disabled.toOpml()))
   })
 
   it('Esc cancels an edit without changing anything', () => {
