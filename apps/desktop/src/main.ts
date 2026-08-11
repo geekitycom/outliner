@@ -46,12 +46,13 @@ const appWindow = getCurrentWindow()
 // since Close Tab's prompt isn't part of any Rust-driven flow at all.
 let unsavedPromptOpen = false
 
-// Shared by the native close button's guard further down and Close Tab's
-// own native routing (a *predefined* menu item — see build_menu's
-// file_submenu doc comment in src-tauri/src/lib.rs — macOS's performClose:
-// already funnels both into the same onCloseRequested path below, so
-// neither needs its own listener here), so both routes run the same
-// unsaved-changes prompt before actually closing.
+// Shared by the native close button's guard further down and the File >
+// Close Tab menu item. Neither needs its own listener here: the menu item
+// is handled in Rust by calling Tauri's `close()` on the focused window
+// (see the "close-tab" branch in on_menu_event), which fires the same
+// `close-requested` event the red traffic-light button does — so both
+// routes land in the onCloseRequested handler below and run this one
+// unsaved-changes prompt before anything actually closes.
 async function closeTab(): Promise<void> {
   if (unsavedPromptOpen) return
   unsavedPromptOpen = true

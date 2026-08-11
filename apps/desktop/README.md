@@ -87,9 +87,15 @@ start a fresh group.
   new tab group rather than joining the focused one. This is the one way to deliberately get a
   window that isn't grouped with anything.
 - **Close Tab** (`Cmd/Ctrl-W`) — closes just the focused tab, running the same unsaved-changes
-  prompt as the native close button (traffic-light / titlebar close) — mechanically this is just
-  Tauri's predefined "close window" menu role with the label changed, since under native tabbing
-  each tab already *is* a window as far as Tauri/AppKit are concerned.
+  prompt as the native close button (traffic-light / titlebar close). Under native tabbing each tab
+  already *is* a window as far as Tauri/AppKit are concerned, so this closes one window. It's a
+  **custom** menu item, not Tauri's predefined "close window" role with the label changed, which is
+  what it originally was: AppKit draws that predefined role with a leading ✕ glyph, and one item
+  carrying an image makes NSMenu reserve an image column for its whole group, indenting the
+  neighbouring items and leaving the File menu visibly ragged. The custom item is routed in Rust by
+  calling Tauri's `close()` (not `destroy()`) on the focused window, which fires the same
+  `close-requested` event the traffic-light button does — so both routes still funnel through the
+  single guard in `src/main.ts` rather than each needing their own prompt.
 - **Close Window** (`Cmd/Ctrl-Shift-W`) — closes **every tab in the focused window's tab group**,
   prompting one at a time for whichever are dirty (clean tabs close immediately, no prompt).
   Reuses the same Rust-side walk Quit uses (see below) rather than a second implementation — see

@@ -774,6 +774,23 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
   // uses) that no predefined item can do — see close_window_group's doc
   // comment, reached from the "close-window" branch in on_menu_event
   // below.
+  // Custom rather than the predefined "close window" role with its text
+  // changed, which is what this used to be. AppKit draws that predefined
+  // role with a leading ✕ glyph, and a single item carrying an image makes
+  // NSMenu reserve an image column for its whole group — indenting the
+  // neighbouring items' text and leaving the File menu visibly ragged.
+  // A custom item carries no image, so the column disappears.
+  //
+  // Losing the predefined role means losing its automatic responder-chain
+  // routing, so this is routed like every other custom item (see
+  // on_menu_event) — but it deliberately calls Tauri's `close()`, not
+  // `destroy()`. `close()` requests a close, which fires the same
+  // `close-requested` event the red traffic-light button does, so both
+  // routes still funnel through the single unsaved-changes guard in
+  // main.ts and the frontend needs no new listener at all.
+  let close_tab_item = MenuItemBuilder::with_id("close-tab", "Close Tab")
+    .accelerator("CmdOrCtrl+W")
+    .build(app)?;
   let close_window_item = MenuItemBuilder::with_id("close-window", "Close Window")
     .accelerator("CmdOrCtrl+Shift+W")
     .build(app)?;
@@ -789,14 +806,7 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
     .item(&open_item)
     .separator()
     .item(&new_window_item)
-    // Predefined, with custom text ("Close Tab" instead of the OS default
-    // "Close Window" — Close Window above is now a different, custom
-    // item) rather than a custom item routed through on_menu_event: see
-    // build_menu's doc comment above for why native items can target the
-    // focused window without any Rust-side routing. Its accelerator
-    // (Cmd-W) is assigned automatically by macOS for this predefined role
-    // and is absent from CONCORD_KEYSTROKES too.
-    .close_window_with_text("Close Tab")
+    .item(&close_tab_item)
     .item(&close_window_item)
     .separator()
     .item(&save_item)
@@ -1047,6 +1057,17 @@ pub fn run() {
         // then works through however many of those tabs are dirty one at a
         // time, same shape as Quit below. See close_window_group's doc
         // comment.
+        // close() rather than destroy(): it fires `close-requested`, which
+        // the focused tab's own guard in main.ts already handles — the same
+        // path the red traffic-light button takes. destroy() would skip the
+        // unsaved-changes prompt entirely.
+        if id == "close-tab" {
+          if let Some(window) = focused_window(app) {
+            let _ = window.close();
+          }
+          return;
+        }
+
         if id == "close-window" {
           if let Some(window) = focused_window(app) {
             close_window_group(app, &window);
