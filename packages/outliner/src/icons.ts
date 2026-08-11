@@ -12,6 +12,13 @@
  * (Iconify prefix `mi`) for a consistent monoline look, except `rss`, which
  * Mono Icons has no glyph for and so comes from Material Design Icons
  * (`mdi`). Fills are opaque so the shapes read cleanly as CSS masks.
+ *
+ * Browse the set for new icons at https://icon-sets.iconify.design/mi/ —
+ * Mono Icons is already 24x24, so a glyph's `<path>` can be pasted in as-is.
+ * Drop the `fill="currentColor"` Iconify includes: these render as CSS masks,
+ * where the shape is all that matters and the color comes from the span's
+ * background. The comment above each entry records its Iconify name (`mi:…`)
+ * so an icon can be traced back to its source later.
  */
 export const ICONS: Record<string, string> = {
   // mi:caret-right (the default bullet), scaled up ~1.5x about center so the
