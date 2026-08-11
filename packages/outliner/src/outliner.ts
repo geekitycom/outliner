@@ -17,6 +17,7 @@ import { NodeRef } from './noderef'
 import { bindEvents } from './events'
 import { injectIconStyles } from './icons'
 import { installGlobals } from './globals'
+import { TitleRow } from './titleRow'
 import {
   register,
   onResume as runtimeOnResume,
@@ -55,13 +56,16 @@ export class Outliner {
   readonly op: Op
   readonly script: Script
   readonly state: InstanceState
+  private readonly titleRowCtl: TitleRow
 
   constructor(container: HTMLElement, options?: OutlinerOptions) {
     this.container = container
     injectIconStyles()
 
-    // Reuse an existing root if the container already holds one.
+    // Reuse an existing root (and title row, if any) if the container
+    // already holds one.
     const existingRoot = container.querySelector(':scope > .concord-root') as HTMLOListElement | null
+    const existingTitleRow = container.querySelector(':scope > .concord-title-row') as HTMLDivElement | null
     if (existingRoot) {
       this.root = existingRoot
       this.pasteBin = container.querySelector(':scope > .pasteBin') as HTMLDivElement
@@ -106,6 +110,10 @@ export class Outliner {
     this.editor = new Editor(this)
     this.op = new Op(this)
     this.script = new Script(this)
+    // Not attached to the DOM here -- prefs() below (or a later prefs()
+    // call) is what inserts it, so a fresh container with no options sees
+    // no row at all, matching the pref's default-off behavior.
+    this.titleRowCtl = new TitleRow(this, existingTitleRow ?? undefined)
 
     register(this.root, this)
     installGlobals()
@@ -130,6 +138,13 @@ export class Outliner {
 
   onResume(cb: () => void): void {
     runtimeOnResume(cb)
+  }
+
+  /** Push the current "what you're looking at" text into the title row, if
+   *  one is attached. Called from the few op.ts choke points that can
+   *  change the answer -- see titleRow.ts for the full rationale. */
+  refreshTitleRow(): void {
+    this.titleRowCtl.refresh()
   }
 
   fireCallback(name: keyof OutlinerCallbacks, node: NodeRefApi): void {
@@ -180,8 +195,25 @@ export class Outliner {
       if (prefs.renderMode !== undefined) this.state.renderMode = prefs.renderMode
       this.applyTypography(prefs)
       if (newPrefs.css) this.op.setStyle(newPrefs.css)
+      this.applyTitleRowPref(prefs)
     }
     return prefs
+  }
+
+  /** Insert/remove the title row from the DOM to match `prefs.titleRow`,
+   *  called on every `prefs()` update (not just at construction) so it can
+   *  be toggled after the fact. */
+  private applyTitleRowPref(prefs: OutlinerPrefs): void {
+    this.titleRowCtl.setReadonly(prefs.readonly === true)
+    if (prefs.titleRow) {
+      if (!this.titleRowCtl.element.isConnected) {
+        this.root.insertAdjacentElement('beforebegin', this.titleRowCtl.element)
+      }
+      this.titleRowCtl.refresh()
+    } else {
+      this.titleRowCtl.abortEdit()
+      this.titleRowCtl.element.remove()
+    }
   }
 
   private applyTypography(prefs: OutlinerPrefs): void {

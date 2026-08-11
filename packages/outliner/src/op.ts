@@ -192,6 +192,11 @@ export class Op {
       this.o.state.change = stateBefore
       this.o.state.changeTextMode = textModeBefore
       this.o.state.changeRange = beforeRange
+      // Defensive: undo() restores root's children, which -- while hoisted
+      // -- are the hoisted headline's own children, not its text. The title
+      // row's text isn't reachable through this snapshot today, but refresh
+      // anyway so it can never go stale if that ever changes.
+      this.o.refreshTitleRow()
       return true
     }
     return false
@@ -376,6 +381,7 @@ export class Op {
     this.hoistStack.push(this.applyHoist(node))
     const first = childNodes(this.root)[0]
     if (first) this.setCursor(first)
+    this.o.refreshTitleRow()
     return true
   }
 
@@ -385,6 +391,7 @@ export class Op {
     if (!frame) return false
     this.undoHoist(frame)
     if (frame.node.isConnected) this.setCursor(frame.node)
+    this.o.refreshTitleRow()
     return true
   }
 
@@ -401,6 +408,18 @@ export class Op {
 
   hoistDepth(): number {
     return this.hoistStack.length
+  }
+
+  /**
+   * The headline currently hoisted into (the innermost frame), or null at
+   * the real root. Used by the title row (titleRow.ts): while hoisted, this
+   * headline's own text isn't reachable through `root` -- `applyHoist` only
+   * pulls its *children* up, the headline itself sits in the outer frame's
+   * stash -- so this is the one way back to it.
+   */
+  hoistedNode(): HTMLLIElement | null {
+    const frame = this.hoistStack[this.hoistStack.length - 1]
+    return frame ? frame.node : null
   }
 
   // --- find / find-again ------------------------------------------------------
@@ -600,6 +619,10 @@ export class Op {
 
   setTitle(title: string): boolean {
     this.o.state.title = title
+    // The one choke point for "what the title row shows at the root" --
+    // xmlToOutline() also routes through here, so loading a new document
+    // refreshes the row for free.
+    this.o.refreshTitleRow()
     return true
   }
 
@@ -1215,6 +1238,10 @@ export class Op {
     this.setTextMode(false)
     this.setCursor(node)
     this.markChanged()
+    // Clearing hoistStack above can switch the title row from "hoisted
+    // headline" back to "document title" even though the title text itself
+    // is untouched by wipe().
+    this.o.refreshTitleRow()
   }
 
   // --- OPML I/O -------------------------------------------------------------

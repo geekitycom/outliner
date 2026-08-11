@@ -100,6 +100,15 @@
   cursor: pointer !important;
 }
 
+/* --- title row (opt-in via OutlinerPrefs.titleRow) -------------------------
+   Built in titleRow.ts as its own `<ol class="concord">` (never `root`), so
+   the row-metrics rules above already give it identical spacing/indent to a
+   real headline -- the only difference that needs a rule here is separating
+   it visually from the outline it sits above. */
+.concord-title-row {
+  margin-bottom: 4px;
+}
+
 /* --- links & comments ----------------------------------------------------- */
 .concord-text a,
 .concord-text a:visited {

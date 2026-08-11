@@ -23,6 +23,16 @@ export interface OutlinerPrefs {
   typeIcons?: TypeIcons
   /** Extra CSS injected for this instance. */
   css?: string
+  /**
+   * Show an opt-in row above the outline that displays -- and edits --
+   * whichever text describes "what you're currently looking at": the OPML
+   * `<head><title>` at the document root, or the text of the headline
+   * you're hoisted into (otherwise invisible while hoisted, since only its
+   * children are shown). Click it, or Tab into it, to edit; it is
+   * deliberately outside the outline's cursor model, so arrow keys never
+   * land on it. Default `false`.
+   */
+  titleRow?: boolean
   /** Allow arbitrary extra prefs. */
   [key: string]: unknown
 }

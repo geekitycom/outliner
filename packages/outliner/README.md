@@ -190,6 +190,30 @@ subtree. `expandToLevel()` also nests correctly: it always operates on
 whatever's currently at the top of the view (the real root, or the hoisted
 node), the same as `expand()`/`collapse()` do.
 
+### Title row
+
+`prefs: { titleRow: true }` (default `false`) adds a row above the outline,
+laid out like a headline but with a text-document icon instead of the usual
+bullet. It shows — and lets you edit — whichever text answers "what am I
+currently looking at":
+
+- **At the document root**, that's the OPML title (`getTitle()`/`setTitle()`).
+- **While hoisted**, that's the text of the headline you're hoisted *into* —
+  which isn't visible anywhere else while hoisted, since only its children
+  are shown. The row is the only way to read or fix it without de-hoisting
+  first.
+
+It's editable in both states: click it (or Tab into it) to start editing;
+**Enter or blur commits, Esc cancels** and restores the previous text.
+Committing at the root calls `setTitle()`; committing while hoisted renames
+the hoisted headline in place (and marks the document changed, like any
+other edit) — the rename survives `deHoist()`/`deHoistAll()`.
+
+It is **deliberately outside the outline's cursor model** — arrow keys never
+land on it, and it's never part of `toOpml()` output (enabling or disabling
+it doesn't change a single byte of the serialized document). Toggle it any
+time after construction with `outliner.prefs({ titleRow: true })`.
+
 ### Finding
 
 `find(text, options?)` searches headline **text** (not markup — `<b>`/`<i>`/links
