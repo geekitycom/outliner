@@ -104,6 +104,14 @@ whole close/quit if that save is cancelled or fails. Read/write errors surface t
 plugin's `message()` rather than a thrown promise. The window title tracks the current file and
 gets a leading `•` while the document is dirty.
 
+`confirmDiscard()` is laid out like the macOS save alert it stands in for: a warning icon, a bold
+question naming the document, a consequence line, and the three choices as full-width buttons
+stacked vertically with Save tinted as the default. It takes the document's name as an argument
+rather than saying "this document" — during a quit the flow walks each dirty window in turn, and
+an anonymous prompt gives no clue *which* document is being asked about. Save is both first in
+DOM order and focused, so Return activates it and the tint tells the user so; Esc still maps to
+Cancel, so the destructive choice is never a default.
+
 Each window is its own Tauri webview with its own JS realm, so `document.ts`'s module-level
 `outliner`/`currentPath` state is automatically per-window — no registry keyed by window label
 is needed to keep multiple documents' state apart.

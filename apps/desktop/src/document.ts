@@ -27,6 +27,16 @@ function basename(path: string): string {
   return path.split(/[/\\]/).pop() ?? path
 }
 
+/**
+ * What the user calls this document — its filename, or "Untitled" if it has
+ * never been saved. Used for the window title and to name the document in
+ * the unsaved-changes prompt, which matters when the quit flow walks several
+ * open windows one at a time.
+ */
+function documentName(): string {
+  return currentPath ? basename(currentPath) : 'Untitled'
+}
+
 /** Parses OPML/XML, surfacing malformed markup instead of loading garbage. */
 function parseOpml(text: string): Document {
   const doc = new DOMParser().parseFromString(text, 'application/xml')
@@ -59,7 +69,9 @@ let lastSentDirty: boolean | null = null
 
 function syncTitle(): void {
   const dirty = isDirty()
-  const base = currentPath ? basename(currentPath) : 'Untitled — GeekityFlow'
+  // An unsaved document gets the app name appended, matching how macOS
+  // document apps title a window that has no file behind it yet.
+  const base = currentPath ? documentName() : `${documentName()} — GeekityFlow`
   const title = dirty ? `• ${base}` : base
   // setTitle() needs its own core:window:allow-set-title grant (core:default
   // only covers read-only window commands) — if that permission ever
@@ -165,7 +177,7 @@ export function initDocument(instance: Outliner): void {
  */
 export async function confirmClose(): Promise<boolean> {
   if (!isDirty()) return true
-  const choice = await confirmDiscard()
+  const choice = await confirmDiscard(documentName())
   if (choice === 'cancel') return false
   if (choice === 'save') return saveDocument()
   return true // discard
@@ -194,7 +206,7 @@ export async function confirmClose(): Promise<boolean> {
  */
 export async function confirmQuit(): Promise<boolean> {
   if (!isDirty()) return true
-  const choice = await confirmDiscard()
+  const choice = await confirmDiscard(documentName())
   if (choice === 'cancel') return false
   if (choice === 'save') return saveDocument()
   // discard: see doc comment above for why this clears the flag itself

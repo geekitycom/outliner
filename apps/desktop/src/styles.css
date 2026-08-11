@@ -32,18 +32,91 @@ body {
   background: rgba(0, 0, 0, 0.3);
 }
 
-.confirm-discard p {
-  margin: 0 0 16px;
+/* Unsaved-changes prompt (modal.ts), laid out like the macOS save alert:
+   warning icon, bold question naming the document, consequence line, then
+   full-width buttons stacked vertically rather than in a right-aligned row.
+   Stacking is what lets the tinted default read as the primary action and
+   keeps the two destructive-ish choices visually subordinate to it. */
+.app-modal:has(.confirm-discard) {
+  max-width: 340px;
+  padding: 24px 20px 20px;
+  border-radius: 14px;
+  background: #f4f2ef;
+}
+
+.confirm-discard-icon {
+  display: block;
+  width: 56px;
+  height: 56px;
+  margin: 0 0 18px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.25));
+}
+
+.confirm-discard-heading {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.35;
+  /* Filenames can be long and have no spaces to wrap at. */
+  overflow-wrap: anywhere;
+}
+
+.confirm-discard-detail {
+  margin: 0 0 20px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #3c3c3c;
 }
 
 .confirm-discard-buttons {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
   gap: 8px;
 }
 
 .confirm-discard-buttons button {
-  padding: 6px 14px;
+  width: 100%;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 14px;
+  background: #e3e0dc;
+  color: #1a1a1a;
+}
+
+.confirm-discard-buttons button.primary {
+  background: #3b6ef5;
+  color: #fff;
+  font-weight: 600;
+}
+
+.confirm-discard-buttons button:hover {
+  background: #d8d4cf;
+}
+
+.confirm-discard-buttons button.primary:hover {
+  background: #3161e6;
+}
+
+.confirm-discard-buttons button:active {
+  background: #ccc7c1;
+}
+
+.confirm-discard-buttons button.primary:active {
+  background: #2a55cc;
+}
+
+/* Save carries autofocus, so without this every appearance of the dialog
+   would show a focus ring around it — noise, since the tint already says
+   it's the default. Keyboard users still get a ring once they Tab. */
+.confirm-discard-buttons button:focus:not(:focus-visible) {
+  outline: none;
+}
+
+.confirm-discard-buttons button:focus-visible {
+  outline: 2px solid #3b6ef5;
+  outline-offset: 2px;
 }
 
 /* Outliner ▸ Find… / Find again prompt (find.ts). row-reverse keeps Cancel
