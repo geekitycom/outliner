@@ -20,7 +20,11 @@ import { promptFind, findAgain } from './find'
 // src-tauri/src/lib.rs) and this module are the only things that call into
 // document.ts.
 const container = document.getElementById('app') as HTMLElement
-const outliner = createOutliner(container)
+// titleRow shows the OPML <head><title> above the outline, and the headline
+// you're inside while hoisted — the one place that headline's text is
+// visible at all, since hoisting shows its children rather than itself.
+// Off by default in the library, so this app opts in explicitly.
+const outliner = createOutliner(container, { prefs: { titleRow: true } })
 initDocument(outliner)
 
 // A window spawned for a specific file (via File > Open, see

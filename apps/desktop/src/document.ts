@@ -144,9 +144,18 @@ export function initDocument(instance: Outliner): void {
   })
 
   // markChanged() is only called by structural operations in op.ts — plain
-  // text edits never reach it, so hasChanged() alone misses them. The
-  // container's `input` event is the one signal every text edit fires.
-  outliner.container.addEventListener('input', () => {
+  // text edits never reach it, so hasChanged() alone misses them. An `input`
+  // event is the one signal every text edit fires.
+  //
+  // Bound to `root`, not `container`: the title row (prefs.titleRow, enabled
+  // in main.ts) is a sibling of root *inside* container, so a container-level
+  // listener would also mark the document dirty for every keystroke typed
+  // into it — including an edit the user then cancels with Esc, leaving a
+  // document that claims unsaved changes it doesn't have. A committed title
+  // edit still marks the document changed: the library's own commit path
+  // calls markChanged() itself (titleRow.ts), for both the root-title and
+  // hoisted-rename cases — Op.setTitle alone does not.
+  outliner.root.addEventListener('input', () => {
     outliner.markChanged()
     syncTitle()
   })
