@@ -29,8 +29,12 @@ let ready = false
 export interface InstanceState {
   prefs: OutlinerPrefs
   callbacks: OutlinerCallbacks
+  // The single store for OPML `<head>` data -- title included. `title` is
+  // just another key here (see `Op.getTitle`/`setTitle`), always present
+  // (seeded in the constructor) so `outlineToXml()` never has to special-case
+  // its absence. Computed fields (`COMPUTED_HEAD_FIELDS`) are deliberately
+  // never written here -- see `Op.outlineToXml`/`xmlToOutline`.
   headers: OpmlHeaders
-  title: string
   renderMode?: boolean
   changed: boolean
   change: HTMLElement[] | null
@@ -57,6 +61,13 @@ export class Outliner {
   readonly script: Script
   readonly state: InstanceState
   private readonly titleRowCtl: TitleRow
+  // Internal head-change subscribers. Views composed into this instance
+  // (currently just the title row) register here via `onHeadChange()`
+  // instead of op.ts calling them by name -- op.ts only ever calls
+  // `fireHeadChange()`, so a second editable head field needs no new call
+  // site there. Library consumers should use `OutlinerCallbacks.opHeadChange`
+  // instead of this -- it fires alongside every listener registered here.
+  private readonly headListeners: Array<(headers: OpmlHeaders) => void> = []
 
   constructor(container: HTMLElement, options?: OutlinerOptions) {
     this.container = container
@@ -91,8 +102,7 @@ export class Outliner {
     this.state = {
       prefs: {},
       callbacks: {},
-      headers: {},
-      title: '',
+      headers: { title: '' },
       renderMode: undefined,
       changed: false,
       change: null,
@@ -141,10 +151,35 @@ export class Outliner {
   }
 
   /** Push the current "what you're looking at" text into the title row, if
-   *  one is attached. Called from the few op.ts choke points that can
-   *  change the answer -- see titleRow.ts for the full rationale. */
+   *  one is attached. This is *not* about head data changing -- that goes
+   *  through `fireHeadChange()` below, which the row subscribes to itself.
+   *  This is for when the view *target* changes instead (hoist/de-hoist/undo
+   *  can switch the row between "document title" and "hoisted headline",
+   *  even though no head field was touched), which op.ts still calls
+   *  directly since it's a single, fixed relationship, not something a new
+   *  head field would ever need to hook into. */
   refreshTitleRow(): void {
     this.titleRowCtl.refresh()
+  }
+
+  /** Subscribe to authored head-data changes (see `fireHeadChange`). Internal
+   *  composition mechanism, not part of the public API -- library consumers
+   *  should set `OutlinerCallbacks.opHeadChange` instead, which fires
+   *  alongside every listener registered here. */
+  onHeadChange(listener: (headers: OpmlHeaders) => void): void {
+    this.headListeners.push(listener)
+  }
+
+  /**
+   * The one choke point op.ts calls whenever authored `<head>` data changes
+   * -- `setTitle`, `setHeaders`, or a fresh load. Notifies every internal
+   * subscriber (the title row) and the external `opHeadChange` callback.
+   * Adding a second editable head field needs no new plumbing here or in
+   * op.ts -- its setter just calls this same method.
+   */
+  fireHeadChange(headers: OpmlHeaders): void {
+    for (const listener of this.headListeners) listener(headers)
+    this.state.callbacks.opHeadChange?.(headers)
   }
 
   fireCallback(name: keyof OutlinerCallbacks, node: NodeRefApi): void {

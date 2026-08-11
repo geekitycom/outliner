@@ -2,7 +2,7 @@
 // the live bar cursor (`.concord-cursor`).
 import type { Outliner } from './outliner'
 import type { Direction, FindOptions, OpmlHeaders } from './types'
-import { UP, DOWN, LEFT, RIGHT, FLATUP, FLATDOWN } from './constants'
+import { UP, DOWN, LEFT, RIGHT, FLATUP, FLATDOWN, COMPUTED_HEAD_FIELDS } from './constants'
 import { NodeAttributes } from './attributes'
 import { NodeRef } from './noderef'
 import { escapeXml } from './util'
@@ -612,29 +612,54 @@ export class Op {
   }
 
   // --- title & headers ------------------------------------------------------
+  //
+  // `state.headers` is the single store for OPML `<head>` data -- title
+  // included (`title` is just another key in the same map). getTitle()/
+  // setTitle() are accessors over it, so there is exactly one place the
+  // title lives: setHeaders({ title: ... }) and setTitle(...) can never
+  // disagree, because they write the same field.
 
   getTitle(): string {
-    return this.o.state.title
+    return this.o.state.headers['title'] ?? ''
   }
 
   setTitle(title: string): boolean {
-    this.o.state.title = title
-    // The one choke point for "what the title row shows at the root" --
-    // xmlToOutline() also routes through here, so loading a new document
-    // refreshes the row for free.
-    this.o.refreshTitleRow()
+    this.o.state.headers['title'] = title
+    // setTitle() alone does not mark the document changed -- callers that
+    // represent a real user edit (titleRow.ts's commit()) call markChanged()
+    // themselves; a plain programmatic setTitle() (e.g. from xmlToOutline on
+    // load) must not look like an unsaved change.
+    this.o.fireHeadChange(this.getHeaders())
     return true
   }
 
   getHeaders(): OpmlHeaders {
-    const headers: OpmlHeaders = { ...this.o.state.headers }
-    headers['title'] = this.getTitle()
-    return headers
+    return { ...this.o.state.headers }
   }
 
+  /**
+   * Merge `headers` into the authored `<head>` map (`Object.assign`
+   * semantics): every key present overwrites the current value -- setting
+   * `title` here works exactly like `setTitle()`, since they share the same
+   * store -- and every key *not* present is left untouched. This is
+   * deliberate: a caller patching in one custom field (e.g.
+   * `{ ownerName: 'x' }`) must not silently wipe out the title or any other
+   * field it didn't mention. Pass a full `getHeaders()` snapshot back in
+   * (spread with your changes) if you specifically want replace-all
+   * semantics.
+   *
+   * Computed field names (`COMPUTED_HEAD_FIELDS`) are silently ignored --
+   * they're regenerated at serialization time (see `outlineToXml`), so
+   * accepting one here would let it leak into `getHeaders()` as if the user
+   * had authored it.
+   */
   setHeaders(headers: OpmlHeaders): boolean {
-    this.o.state.headers = headers
+    for (const name of Object.keys(headers)) {
+      if (COMPUTED_HEAD_FIELDS.has(name)) continue
+      this.o.state.headers[name] = headers[name]
+    }
     this.markChanged()
+    this.o.fireHeadChange(this.getHeaders())
     return true
   }
 
@@ -1282,11 +1307,13 @@ export class Op {
     // hoisted into view — see `withFullTree`. This is what stops a Save made
     // while hoisted from writing out only the hoisted subtree.
     return this.withFullTree(() => {
+      // getHeaders() is always the clean authored map -- 'title' included,
+      // computed fields never -- so the three computed fields below are
+      // simply appended, never overwriting anything a user actually wrote.
       const head: OpmlHeaders = this.getHeaders()
       if (ownerName) head['ownerName'] = ownerName
       if (ownerEmail) head['ownerEmail'] = ownerEmail
       if (ownerId) head['ownerId'] = ownerId
-      head['title'] = this.getTitle() || ''
       head['dateModified'] = new Date().toUTCString()
 
       const expansionStates: number[] = []
@@ -1347,17 +1374,31 @@ export class Op {
     this.hoistStack = []
     this.root.replaceChildren()
 
+    // 'title' is looked up leniently (a bare <title> outside <head> is also
+    // accepted, matching legacy Concord documents) and seeded first, so it's
+    // always present -- and always the first key, matching the order every
+    // other load/save path produces -- even if <head> is missing or
+    // malformed.
     const titleEl = doc.querySelector('head > title, title')
-    this.setTitle(titleEl?.textContent ?? '')
-
-    const headers: OpmlHeaders = {}
+    const headers: OpmlHeaders = { title: titleEl?.textContent ?? '' }
     const head = doc.querySelector('head')
     if (head) {
       for (const child of Array.from(head.children)) {
-        headers[child.tagName] = child.textContent ?? ''
+        const name = child.tagName
+        // Computed fields are regenerated at save time (see
+        // outlineToXml/COMPUTED_HEAD_FIELDS) -- consumed below for their
+        // *effect* (expansion state, cursor restore), never stored as if the
+        // user authored them, so getHeaders() doesn't report them after a
+        // round trip.
+        if (name === 'title' || COMPUTED_HEAD_FIELDS.has(name)) continue
+        headers[name] = child.textContent ?? ''
       }
     }
     this.o.state.headers = headers
+    // The one notification for "head data changed" on load -- also what
+    // switches the title row from a stale previous document's title back to
+    // this one's (see Outliner.fireHeadChange).
+    this.o.fireHeadChange(this.getHeaders())
 
     const body = doc.querySelector('body')
     if (body) {

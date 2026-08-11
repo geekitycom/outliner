@@ -20,6 +20,22 @@ export const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(
 export const VERSION = '0.1.0' // x-release-please-version
 
 /**
+ * `<head>` field names that `outlineToXml()` generates fresh on every save
+ * rather than the user authoring them. `xmlToOutline()` still *consumes*
+ * them on load (expansion state and cursor position get restored from
+ * them), but never copies them into the authored header map -- so after a
+ * save/load round trip `getHeaders()` reports only what the user actually
+ * wrote, not implementation detail like `lastCursor`. Extend this set
+ * (rather than adding an ad-hoc filter elsewhere) when a new computed field
+ * is introduced.
+ */
+export const COMPUTED_HEAD_FIELDS: ReadonlySet<string> = new Set([
+  'dateModified',
+  'expansionState',
+  'lastCursor',
+])
+
+/**
  * A minimal, valid OPML document with a single empty headline — the starting
  * point for a blank outline. Equivalent to `initialOpmltext` in the original
  * concordutils.js (updated to UTF-8). Pass it to `outliner.loadOpml(...)`.

@@ -130,7 +130,7 @@ export class Editor {
 
   opml(rootEl?: Element, flsubsonly = false): string {
     const target = rootEl ?? this.root
-    let title = this.o.state.title
+    let title = this.o.op.getTitle()
     if (!title) {
       if (target.classList.contains('concord-node')) {
         title = textOf(target)?.textContent ?? ''

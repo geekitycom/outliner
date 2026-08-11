@@ -190,6 +190,50 @@ subtree. `expandToLevel()` also nests correctly: it always operates on
 whatever's currently at the top of the view (the real root, or the hoisted
 node), the same as `expand()`/`collapse()` do.
 
+### Head data
+
+An OPML document's `<head>` — title plus whatever else was written there — is
+one store: `getHeaders()`/`setHeaders()` read and write the same map
+`getTitle()`/`setTitle()` are accessors over, so `title` is just another key
+in it. There's no separate title field to fall out of sync with the map (that
+used to be possible: `setHeaders({ title: ... })` could silently lose to a
+`state.title` field `getHeaders()` always read from instead).
+
+```ts
+outliner.setTitle('Weekly Notes')       // same store as...
+outliner.setHeaders({ owner: 'andrew' }) // ...this
+outliner.getHeaders() // { title: 'Weekly Notes', owner: 'andrew' }
+```
+
+`setHeaders()` **merges** into the existing map (`Object.assign` semantics):
+every key you pass overwrites the current value, and every key you don't
+mention is left alone. This is deliberate — patching in one custom field
+must not silently wipe out the title or any other field you didn't mention.
+If you want replace-all semantics instead, spread a `getHeaders()` snapshot
+together with your changes and pass that.
+
+**Computed vs. authored.** `dateModified`, `expansionState`, and
+`lastCursor` are generated fresh by `toOpml()` on every call — they're
+implementation detail (a save timestamp, which nodes are expanded, where the
+cursor was), not something a user authors. The full, extensible list lives
+in one place, `COMPUTED_HEAD_FIELDS` (`src/constants.ts`). They're still
+*consumed* on load — `expansionState` restores which headlines are expanded,
+`lastCursor` restores the cursor position — but `loadOpml()` never copies
+them into the authored map, so `getHeaders()` never reports them, including
+after a save → load round trip. `setHeaders()` silently ignores an attempt
+to set one of these names, for the same reason. Any other field, known or
+not, round-trips through `<head>` untouched.
+
+**Reacting to a head change.** `OutlinerCallbacks.opHeadChange(headers)`
+(alongside `opInsert`/`opExpand`/`opReorg`/…, see `setCallbacks()`) fires
+whenever authored head data changes — `setTitle()`, `setHeaders()`, or a
+fresh `loadOpml()` — with the complete authored map, the same shape
+`getHeaders()` returns. This is how the title row itself stays in sync: it
+subscribes to the same notification internally rather than being called by
+name from the model layer, so adding a second editable head field (an
+"owner" row, say) needs no new plumbing in `op.ts` — its setter just needs
+to update the map and let the existing notification fire.
+
 ### Title row
 
 `prefs: { titleRow: true }` (default `false`) adds a row above the outline,

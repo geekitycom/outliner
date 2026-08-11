@@ -51,6 +51,11 @@ export class TitleRow {
     this.element = built.element
     this.text = built.text
     this.bind()
+    // Subscribe rather than being called by name: setTitle()/setHeaders()
+    // (and a fresh load) only ever call Outliner.fireHeadChange() -- they
+    // have no idea this row exists. A second editable head field would
+    // subscribe here the same way, needing no new plumbing in op.ts.
+    this.o.onHeadChange(() => this.refresh())
   }
 
   private static build(): BuiltRow {

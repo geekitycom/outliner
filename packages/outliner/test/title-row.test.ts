@@ -63,6 +63,20 @@ describe('title row (opt-in via prefs.titleRow)', () => {
     expect(requireTitleRowText(o).textContent).toBe('My Document')
   })
 
+  it('updates via setHeaders() too, through the same head-change notification setTitle uses', () => {
+    // Regression: setHeaders() never used to refresh the row at all (only
+    // setTitle() called Op -> Outliner.refreshTitleRow() directly), so a
+    // title set through setHeaders() would silently never reach the row.
+    // Both now go through Outliner.fireHeadChange(), which the row
+    // subscribes to once in its constructor -- no per-field wiring needed.
+    const o = mount(opml('<outline text="a"/>'))
+    o.prefs({ titleRow: true })
+
+    o.setHeaders({ title: 'Via setHeaders' })
+
+    expect(requireTitleRowText(o).textContent).toBe('Via setHeaders')
+  })
+
   it('committing an edit at the root updates getTitle() and the serialized OPML', () => {
     const o = mount(opml('<outline text="a"/>'))
     o.prefs({ titleRow: true })

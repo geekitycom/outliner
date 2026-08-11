@@ -93,6 +93,15 @@ export interface OutlinerCallbacks {
   opHover?: (node: NodeRef) => void
   opContextMenu?: (node: NodeRef) => void
   opKeystroke?: (event: KeystrokeEvent) => void
+  /**
+   * Fired whenever authored `<head>` data changes -- the title (`setTitle`)
+   * or any other field (`setHeaders`), including a fresh set right after
+   * `loadOpml`. Carries the complete authored header map (the same shape
+   * `getHeaders()` returns -- computed fields like `dateModified` are never
+   * included, see `COMPUTED_HEAD_FIELDS`), so a listener never needs a
+   * follow-up `getHeaders()` call to know what changed.
+   */
+  opHeadChange?: (headers: OpmlHeaders) => void
 }
 
 /** Options accepted by the `Outliner` constructor. */
