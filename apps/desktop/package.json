@@ -6,7 +6,8 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "app": "tauri build --debug --bundles app && open src-tauri/target/debug/bundle/macos/GeekityFlow.app"
   },
   "dependencies": {
     "@andrewshell/outliner": "workspace:*",

@@ -34,9 +34,29 @@ background via its manifest form (`{ "default": ..., "bg_color": "#fff" }`) if t
 From the repo root:
 
 ```bash
-pnpm dev:desktop                                    # run it (opens a native window)
+pnpm dev:desktop                                    # run it with HMR (no app icon — see below)
+pnpm app:desktop                                    # build + launch a real .app bundle
 pnpm --filter outliner-desktop tauri build           # bundle a distributable .app / .dmg / etc.
 ```
+
+### Why `pnpm dev:desktop` shows a generic Dock icon
+
+`tauri dev` produces **no `.app` bundle at all** — it compiles and runs the bare Mach-O
+executable at `src-tauri/target/debug/app`. macOS takes an app's Dock and ⌘-Tab icon from a
+bundle's `Contents/Resources/*.icns` via `CFBundleIconFile`, and a loose binary has nowhere to
+put one, so it gets the generic executable icon. Nothing is wrong with the icon set when this
+happens; the same build embeds it correctly in a bundle.
+
+Neither Tauri nor `tao` exposes a runtime dock-icon setter (only `set_dock_visibility`), so
+this can't be patched from Rust without dropping to `NSApplication setApplicationIconImage:`
+through raw Objective-C bindings — not worth a new dependency for a dev-only cosmetic gap.
+
+`pnpm app:desktop` is the way to see the real thing: it runs `tauri build --debug --bundles app`
+and opens the result. Because it reuses the warm `target/debug` artifacts that `tauri dev`
+already built, it takes seconds rather than the minutes a release build needs. What it doesn't
+give you is HMR — it's a build, so re-run it after changes. Use `dev:desktop` for iterating and
+`app:desktop` when you want to check icon, Dock behavior, or anything else that depends on
+being a real bundle.
 
 Requires the [Rust toolchain](https://rustup.rs) and Tauri's OS-level prerequisites (see the
 [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/)) — needed for both
