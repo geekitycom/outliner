@@ -2,7 +2,6 @@ import { createOutliner, UP, DOWN, LEFT, RIGHT } from '@andrewshell/outliner'
 import '@andrewshell/outliner/styles.css'
 import './styles.css'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import {
   initDocument,
@@ -112,25 +111,39 @@ async function handleFlowPrompt(confirm: () => Promise<boolean>): Promise<void> 
 // window closes. Rust resolves whichever window is focused and emits these
 // events to it specifically (emit_to, not a broadcast emit), so each event
 // always lands on the one document the user is actually looking at.
-// listen() needs no extra *permission* — core:event:default comes with
+// These MUST be `appWindow.listen`, never the bare `listen()` from
+// @tauri-apps/api/event. That one defaults to `{ kind: 'Any' }`, and Tauri's
+// match_any_or_filter (src/event/listener.rs) short-circuits on an `Any`
+// listener: `*target == EventTarget::Any || filter(...)`. An `Any` listener
+// therefore receives EVERY emit, including an `emit_to` aimed at a different
+// window — silently defeating the targeting Rust does. That shipped, and it
+// meant every menu command ran in every open window at once: Save wrote all
+// open documents, the Reorg/Outliner items edited all of them, and Open put
+// a file picker on every window, where the background windows' sheets were
+// invisible and app-modal, wedging the app hard enough to need a force quit.
+// appWindow.listen registers `{ kind: 'Window', label }`, which emit_to's
+// `AnyLabel { label }` still matches (see filter_target in
+// src/manager/mod.rs), so targeting finally works as intended.
+//
+// listen() also needs no extra *permission* — core:event:default comes with
 // core:default — but it does need the capability to apply to this window at
 // all. capabilities/default.json originally scoped itself to `"windows":
 // ["main"]`, which silently left every Rust-created window (win-1, win-2,
 // ...) with no permissions: listen() was denied, so the whole menu was dead
 // in second and subsequent windows. It's a `"*"` glob now. Permission and
 // window scope are two separate gates; granting one doesn't grant the other.
-void listen('menu-open', () => void openDocument())
-void listen('menu-save', () => void saveDocument())
-void listen('menu-save-as', () => void saveDocumentAs())
-void listen('menu-keyboard-shortcuts', () => void showShortcuts())
+void appWindow.listen('menu-open', () => void openDocument())
+void appWindow.listen('menu-save', () => void saveDocument())
+void appWindow.listen('menu-save-as', () => void saveDocumentAs())
+void appWindow.listen('menu-keyboard-shortcuts', () => void showShortcuts())
 // 'menu-quit' and 'menu-close-window-group' are the two events Rust
 // doesn't resolve a single focused window for before emitting (see
 // build_menu's "quit"/"close-window" doc comments) — each is targeted at
 // specific windows one at a time instead, walking through a dirty-window
 // flow (advance_flow in src-tauri/src/lib.rs) that may or may not include
 // this window on any given step.
-void listen('menu-quit', () => void handleFlowPrompt(confirmQuit))
-void listen('menu-close-window-group', () => void handleFlowPrompt(confirmClose))
+void appWindow.listen('menu-quit', () => void handleFlowPrompt(confirmQuit))
+void appWindow.listen('menu-close-window-group', () => void handleFlowPrompt(confirmClose))
 
 // Outliner menu: every no-argument operation maps straight to a library
 // call, so they're driven from a table instead of a growing if/else chain —
@@ -149,14 +162,14 @@ const OUTLINER_ACTIONS: Record<string, () => void> = {
   'menu-dehoist': () => outliner.deHoist(),
 }
 for (const [event, action] of Object.entries(OUTLINER_ACTIONS)) {
-  void listen(event, action)
+  void appWindow.listen(event, action)
 }
 // Find… and Find again are the odd ones out: they need UI (a prompt for
 // Find…) or extra state (Find again has to know whether a search has
 // happened yet), so they're routed to find.ts instead of the flat table
 // above.
-void listen('menu-find', () => void promptFind(outliner))
-void listen('menu-find-again', () => void findAgain(outliner))
+void appWindow.listen('menu-find', () => void promptFind(outliner))
+void appWindow.listen('menu-find-again', () => void findAgain(outliner))
 
 // Reorg menu: same one-call-per-item shape as OUTLINER_ACTIONS above, kept
 // as its own table (rather than folded into that one) so it stays obvious
@@ -190,7 +203,7 @@ const REORG_ACTIONS: Record<string, () => void> = {
   'menu-reorg-sort': () => outliner.sort(),
 }
 for (const [event, action] of Object.entries(REORG_ACTIONS)) {
-  void listen(event, action)
+  void appWindow.listen(event, action)
 }
 
 // The native close button (red traffic light) doesn't go through the menu
