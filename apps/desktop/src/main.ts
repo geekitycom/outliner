@@ -1,4 +1,4 @@
-import { createOutliner } from '@andrewshell/outliner'
+import { createOutliner, UP, DOWN, LEFT, RIGHT } from '@andrewshell/outliner'
 import '@andrewshell/outliner/styles.css'
 import './styles.css'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -146,6 +146,41 @@ for (const [event, action] of Object.entries(OUTLINER_ACTIONS)) {
 // above.
 void listen('menu-find', () => void promptFind(outliner))
 void listen('menu-find-again', () => void findAgain(outliner))
+
+// Reorg menu: same one-call-per-item shape as OUTLINER_ACTIONS above, kept
+// as its own table (rather than folded into that one) so it stays obvious
+// at a glance which menu each entry belongs to now that there are two.
+//
+// Unlike every other accelerator in this app, the eight below (Cmd-U/D/L/R,
+// Cmd-\, Cmd-/, Cmd-[, Cmd-]) are bound in Rust (see reorg_submenu's doc
+// comment in src-tauri/src/lib.rs) even though they duplicate keys the
+// outliner's own keydown handler already binds via CONCORD_KEYSTROKES
+// (packages/outliner/src/util.ts) — on macOS the menu wins that race and
+// shadows the outliner's handler entirely. That's fine *here* because it
+// was verified against packages/outliner/src/keyboard.ts: the shadowed
+// cases ('reorg-up'/'reorg-down'/'reorg-left'/'reorg-right'/'promote'/
+// 'demote'/'toggle-comment'/'run-selection') are thin unconditional
+// wrappers around these exact same Outliner methods, with no text-mode
+// branching or cursor-state guard the menu path would skip — so shadowing
+// them changes nothing observable. That is NOT true of Edit menu's Undo/
+// Select All (a predefined item there would invoke the webview's native
+// undo/select instead of the outliner's own), which is why those stay
+// unbound; see design note 3 in README.md.
+const REORG_ACTIONS: Record<string, () => void> = {
+  'menu-reorg-move-up': () => outliner.reorg(UP),
+  'menu-reorg-move-down': () => outliner.reorg(DOWN),
+  'menu-reorg-move-left': () => outliner.reorg(LEFT),
+  'menu-reorg-move-right': () => outliner.reorg(RIGHT),
+  'menu-reorg-toggle-comment': () => outliner.toggleComment(),
+  'menu-reorg-run-selection': () => outliner.runSelection(),
+  'menu-reorg-delete-line': () => outliner.deleteLine(),
+  'menu-reorg-promote': () => outliner.promote(),
+  'menu-reorg-demote': () => outliner.demote(),
+  'menu-reorg-sort': () => outliner.sort(),
+}
+for (const [event, action] of Object.entries(REORG_ACTIONS)) {
+  void listen(event, action)
+}
 
 // The native close button (red traffic light) doesn't go through the menu
 // at all, so it needs its own guard here.

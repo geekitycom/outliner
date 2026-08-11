@@ -352,11 +352,78 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
     .item(&find_again_item)
     .build()?;
 
+  // Modeled on Dave Winer's Drummer (drummer.land) Reorg menu, accelerators
+  // included — this is the one custom submenu in this app that binds
+  // CONCORD_KEYSTROKES accelerators at all, and that's a deliberate
+  // difference from the Outliner menu above, not an inconsistency:
+  //
+  // On macOS the app menu gets first crack at a key equivalent, so every
+  // accelerator below (Cmd-U/D/L/R, Cmd-\, Cmd-/, Cmd-[, Cmd-]) SHADOWS the
+  // outliner's own keydown handling of the same keys (CONCORD_KEYSTROKES in
+  // packages/outliner/src/util.ts maps them to 'reorg-up'/'reorg-down'/
+  // 'reorg-left'/'reorg-right'/'toggle-comment'/'run-selection'/'promote'/
+  // 'demote'). That's exactly the failure mode design note 3 in README.md
+  // warns about for Edit > Undo/Select All — except here it's safe, because
+  // it was checked against packages/outliner/src/keyboard.ts directly:
+  // every one of those eight `case`s is a thin, unconditional wrapper
+  // around the very same Outliner method this menu calls (e.g. `case
+  // 'reorg-up': ... op.reorg(UP); break`, `case 'promote': ... op.promote();
+  // break`) with no text-mode branching and no cursor-state guard that the
+  // menu path would skip. Shadowing a call with an identical call is
+  // behavior-preserving. Undo/Select All were different: a *predefined*
+  // menu item there would invoke the webview's native undo/select-all
+  // instead of the outliner's own, actually changing behavior — which is
+  // also why the Edit menu above still must not add them.
+  let reorg_move_up_item = MenuItemBuilder::with_id("reorg-move-up", "Move Up")
+    .accelerator("CmdOrCtrl+U")
+    .build(app)?;
+  let reorg_move_down_item = MenuItemBuilder::with_id("reorg-move-down", "Move Down")
+    .accelerator("CmdOrCtrl+D")
+    .build(app)?;
+  let reorg_move_left_item = MenuItemBuilder::with_id("reorg-move-left", "Move Left")
+    .accelerator("CmdOrCtrl+L")
+    .build(app)?;
+  let reorg_move_right_item = MenuItemBuilder::with_id("reorg-move-right", "Move Right")
+    .accelerator("CmdOrCtrl+R")
+    .build(app)?;
+  let reorg_toggle_comment_item = MenuItemBuilder::with_id("reorg-toggle-comment", "Toggle comment")
+    .accelerator("CmdOrCtrl+\\")
+    .build(app)?;
+  let reorg_run_selection_item = MenuItemBuilder::with_id("reorg-run-selection", "Run selection")
+    .accelerator("CmdOrCtrl+/")
+    .build(app)?;
+  let reorg_delete_line_item = MenuItemBuilder::with_id("reorg-delete-line", "Delete Line").build(app)?;
+  let reorg_promote_item = MenuItemBuilder::with_id("reorg-promote", "Promote")
+    .accelerator("CmdOrCtrl+[")
+    .build(app)?;
+  let reorg_demote_item = MenuItemBuilder::with_id("reorg-demote", "Demote")
+    .accelerator("CmdOrCtrl+]")
+    .build(app)?;
+  let reorg_sort_item = MenuItemBuilder::with_id("reorg-sort", "Sort").build(app)?;
+
+  let reorg_submenu = SubmenuBuilder::new(app, "Reorg")
+    .item(&reorg_move_up_item)
+    .item(&reorg_move_down_item)
+    .item(&reorg_move_left_item)
+    .item(&reorg_move_right_item)
+    .separator()
+    .item(&reorg_toggle_comment_item)
+    .item(&reorg_run_selection_item)
+    .separator()
+    .item(&reorg_delete_line_item)
+    .separator()
+    .item(&reorg_promote_item)
+    .item(&reorg_demote_item)
+    .separator()
+    .item(&reorg_sort_item)
+    .build()?;
+
   MenuBuilder::new(app)
     .item(&app_submenu)
     .item(&file_submenu)
     .item(&edit_submenu)
     .item(&outliner_submenu)
+    .item(&reorg_submenu)
     .item(&help_submenu)
     .build()
 }
@@ -469,6 +536,40 @@ pub fn run() {
           }
           "find-again" => {
             let _ = app.emit_to(label, "menu-find-again", ());
+          }
+          // Reorg menu — same focused-window-only routing as the Outliner
+          // menu above; see build_menu's reorg_submenu doc comment for why
+          // these are the one submenu here that binds accelerators that
+          // shadow the outliner's own keydown handling.
+          "reorg-move-up" => {
+            let _ = app.emit_to(label, "menu-reorg-move-up", ());
+          }
+          "reorg-move-down" => {
+            let _ = app.emit_to(label, "menu-reorg-move-down", ());
+          }
+          "reorg-move-left" => {
+            let _ = app.emit_to(label, "menu-reorg-move-left", ());
+          }
+          "reorg-move-right" => {
+            let _ = app.emit_to(label, "menu-reorg-move-right", ());
+          }
+          "reorg-toggle-comment" => {
+            let _ = app.emit_to(label, "menu-reorg-toggle-comment", ());
+          }
+          "reorg-run-selection" => {
+            let _ = app.emit_to(label, "menu-reorg-run-selection", ());
+          }
+          "reorg-delete-line" => {
+            let _ = app.emit_to(label, "menu-reorg-delete-line", ());
+          }
+          "reorg-promote" => {
+            let _ = app.emit_to(label, "menu-reorg-promote", ());
+          }
+          "reorg-demote" => {
+            let _ = app.emit_to(label, "menu-reorg-demote", ());
+          }
+          "reorg-sort" => {
+            let _ = app.emit_to(label, "menu-reorg-sort", ());
           }
           _ => {}
         }

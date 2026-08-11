@@ -145,11 +145,28 @@ is needed to keep multiple documents' state apart.
   (`meta-F`) maps to `find` there, but `keyboard.ts`'s `case 'find': break` is a no-op that never
   calls `preventDefault`, so the accelerator was free and is now backed by a real
   implementation; `Cmd-G` is absent from the table entirely.
+- **Reorg** — modeled on Dave Winer's Drummer (drummer.land) Reorg menu, including its grouping
+  and separators:
+  - **Move Up** / **Move Down** / **Move Left** / **Move Right** (`Cmd/Ctrl-U` / `-D` / `-L` /
+    `-R`) — `reorg(UP/DOWN/LEFT/RIGHT)`: move the cursor headline within its siblings or across
+    outline levels.
+  - **Toggle comment** (`Cmd/Ctrl-\`) — `toggleComment()`.
+  - **Run selection** (`Cmd/Ctrl-/`) — `runSelection()`.
+  - **Delete Line** (no accelerator) — `deleteLine()`.
+  - **Promote** (`Cmd/Ctrl-[`) / **Demote** (`Cmd/Ctrl-]`) — `promote()` / `demote()`.
+  - **Sort** (no accelerator) — `sort()`.
+
+  Unlike the Outliner menu above, every item here that has a Drummer accelerator keeps it —
+  `Cmd-U/D/L/R`, `Cmd-\`, `Cmd-/`, `Cmd-[`, `Cmd-]` are all bound, even though every one of them
+  duplicates a key `CONCORD_KEYSTROKES` (`packages/outliner/src/util.ts`) already binds in the
+  outliner's own keydown handler, and on macOS the menu wins that race and shadows the handler
+  entirely. That's deliberate here, not an oversight, and it does not contradict the Outliner
+  menu's restraint or the Edit menu's missing Undo/Select All — see design note 9 below for why.
 - **Help** — Keyboard Shortcuts (no accelerator; opens the shortcuts modal).
 
 ## Design notes
 
-Eight choices here look like omissions or overengineering but aren't — please don't "fix" them
+Nine choices here look like omissions or overengineering but aren't — please don't "fix" them
 without reading this first.
 
 **1. The menu is built in Rust (`build_menu` in `src-tauri/src/lib.rs`), not JS.** It used to be
@@ -300,6 +317,38 @@ state honest: when the user picks Don't Save during a quit prompt, `confirmQuit(
 doesn't need to, since closing the window drops its map entry anyway via the `Destroyed` cleanup
 above). By the time `advance_quit` calls `app.exit(0)`, the map is genuinely empty, so
 `ExitRequested`'s dirty check passes it through cleanly.
+
+**9. The Reorg menu binds accelerators that shadow the outliner's own keydown handler — on
+purpose, and this is consistent with design note 3, not a contradiction of it.** `Cmd-U`,
+`Cmd-D`, `Cmd-L`, `Cmd-R`, `Cmd-\`, `Cmd-/`, `Cmd-[`, and `Cmd-]` are all already bound inside
+`packages/outliner/src/keyboard.ts` via `CONCORD_KEYSTROKES` (`packages/outliner/src/util.ts`),
+mapped to `reorg-up`/`reorg-down`/`reorg-left`/`reorg-right`/`toggle-comment`/`run-selection`/
+`promote`/`demote`. On macOS the app menu gets first crack at a key equivalent (the same fact
+design note 3 uses to explain why Edit has no Undo/Select All), so every one of these menu
+accelerators shadows the outliner's own handling of the same key — the outliner's keydown
+handler never sees the keystroke at all once the menu item exists.
+
+The difference from Undo/Select All is what each shadowed handler actually does once you read
+it. Checked directly against `keyboard.ts`: every one of these eight cases is a thin,
+unconditional wrapper around the exact same `Outliner` method the menu item calls — `case
+'reorg-up': ... op.reorg(UP); break`, `case 'promote': ... op.promote(); break`, `case
+'toggle-comment': if (isComment()) unComment(); else makeComment(); break` (which is exactly
+what `Outliner.toggleComment()` does internally, via `Script.toggleComment()`), and so on for
+the rest. None of them branch on text-editing mode or guard on cursor state the way, say, `case
+'select-all'` does (it calls the browser's `document.execCommand('selectAll', ...)` in text mode
+but a DOM-level selection walk otherwise) — so replacing "the keydown handler runs this case"
+with "the menu item calls this same method directly" changes nothing observable. Shadowing a
+call with an identical call is behavior-preserving. A predefined Undo/Select All menu item would
+instead have invoked the *webview's* native undo/select-all — a genuinely different operation
+from the outliner's own — which is why those two stay unbound and always will.
+
+The Outliner menu's own restraint (design note in "Menu layout" above, and the `expand`/
+`collapse`/hoist reasoning in `build_menu`) is a separate, narrower case: `Cmd-,` is bound to
+`toggle-expand` and `Cmd-H` is claimed by Hide Application, and binding either here would shadow
+a *different* outcome than clicking the menu item produces (or collide with an unrelated app
+menu item) — not the "identical wrapper" situation the Reorg menu is in. The two menus reaching
+different conclusions isn't inconsistency; it's the same rule (never shadow a keystroke whose
+outcome the menu item wouldn't reproduce) applied to two different sets of facts.
 
 ## Known limitations
 
