@@ -70,9 +70,11 @@ let lastSentDirty: boolean | null = null
 
 function syncTitle(): void {
   const dirty = isDirty()
-  // An unsaved document gets the app name appended, matching how macOS
-  // document apps title a window that has no file behind it yet.
-  const base = currentPath ? documentName() : `${documentName()} — GeekityFlow`
+  // Just the document's name, with no app-name suffix on unsaved documents:
+  // this string is the *tab* label now, not only the window title, and
+  // "Untitled — GeekityFlow" next to a plain "testing.opml" reads as
+  // inconsistent while eating tab width that the filename needs.
+  const base = documentName()
   const title = dirty ? `• ${base}` : base
   // setTitle() needs its own core:window:allow-set-title grant (core:default
   // only covers read-only window commands) — if that permission ever
