@@ -251,7 +251,22 @@ pub fn advance(pending: Option<&Flow>, input: Input, windows: &Windows) -> Outco
 
 /// A prompt came back with an answer.
 fn resolved(pending: Option<&Flow>, label: &str, response: Response, windows: &Windows) -> Outcome {
-  let _ = response;
+  if response == Response::Cancel {
+    // Cancel aborts the *whole* flow, not just this window's turn: nothing
+    // else is prompted, no further window closes, and the app does not quit.
+    // The window that cancelled keeps its unsaved work — it was never asked
+    // to save, and cancelling is not an admission that the work is dealt
+    // with.
+    //
+    // Clearing `pending` is what lets a later Cmd-Q or Cmd-Shift-W start
+    // over. An aborted flow that left state behind would leave the app
+    // unable to ever quit again, which is a far worse outcome than the one
+    // Cancel asked for.
+    return Outcome {
+      pending: None,
+      steps: Vec::new(),
+    };
+  }
 
   // Marked clean here rather than left to the frontend's own `set_dirty`
   // call: that call and this answer are sent in order from the same webview,
@@ -541,6 +556,68 @@ mod tests {
 
     assert!(app.exited, "the re-entrant dirty check must let this exit through");
     assert!(!app.windows().any_dirty());
+  }
+
+  /// Cancel is not "skip this window" — it abandons the whole flow. Nothing
+  /// further is prompted, nothing closes, the app does not quit, and
+  /// `pending` is cleared so a later Cmd-Q can start over. An aborted flow
+  /// that left state behind would leave the app unable to ever quit again,
+  /// which is a worse outcome than the one Cancel asked for.
+  #[test]
+  fn cancel_mid_walk_abandons_the_whole_flow() {
+    let mut app = App::new(
+      &[("win-1", true), ("win-2", true), ("win-3", true)],
+      &["win-1", "win-2", "win-3"],
+    );
+
+    app.send(Input::StartQuit);
+    app.send(Input::Resolved {
+      label: "win-1".to_string(),
+      response: Response::Proceed,
+    });
+    app.send(Input::Resolved {
+      label: "win-2".to_string(),
+      response: Response::Cancel,
+    });
+
+    assert_eq!(app.prompted(), vec!["win-1", "win-2"]);
+    assert!(!app.log.contains(&Step::Exit));
+    assert!(!app.exited);
+    assert_eq!(app.pending, None, "a cancelled flow must not block the next one");
+    // win-2 was never asked to save, so it stays dirty — cancelling is not
+    // an admission that the work is dealt with.
+    assert!(app.windows().is_dirty("win-2"));
+
+    // And the app can still quit afterwards.
+    app.send(Input::StartQuit);
+    assert_eq!(app.prompted(), vec!["win-1", "win-2", "win-2"]);
+  }
+
+  /// A window can vanish between two answers — the user closes it through
+  /// the traffic light while another window's prompt is up. The walk must
+  /// step over it rather than stalling on a prompt nobody can see.
+  #[test]
+  fn a_window_that_vanishes_mid_walk_is_stepped_over() {
+    let mut app = App::new(&[("win-1", true), ("win-2", true)], &["win-1", "win-2"]);
+
+    app.send(Input::StartQuit);
+    assert_eq!(app.prompted(), vec!["win-1"]);
+
+    // win-2 goes away while win-1's prompt is still open. Its dirty entry
+    // is deliberately left behind: `Destroyed` has not been delivered yet,
+    // which is exactly the race this has to survive.
+    app.live.retain(|l| l != "win-2");
+
+    app.send(Input::Resolved {
+      label: "win-1".to_string(),
+      response: Response::Proceed,
+    });
+
+    assert_eq!(app.prompted(), vec!["win-1"], "win-2 no longer exists to prompt");
+    assert!(app.log.contains(&Step::Forget {
+      label: "win-2".to_string()
+    }));
+    assert!(app.exited);
   }
 }
 
