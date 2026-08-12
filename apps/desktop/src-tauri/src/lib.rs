@@ -5,6 +5,13 @@
 // for the frontend to surface via the dialog plugin's message().
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::collections::HashMap;
+
+// The Quit/Close Window state machine, as plain values with no `tauri` in
+// sight — see flow.rs's own module comment for why that seam exists. What is
+// left in this file for those two flows is an adapter: it reads the world
+// (the dirty map, the live window labels), asks `flow::advance` what to do,
+// and carries out the `Step`s it hands back. It decides nothing itself.
+mod flow;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
