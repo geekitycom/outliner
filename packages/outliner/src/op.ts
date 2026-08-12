@@ -1308,9 +1308,22 @@ export class Op {
   }
 
   outlineToText(): string {
-    let text = ''
-    for (const n of childNodes(this.root)) text += this.o.editor.textLine(n)
-    return text
+    // Same rule as `outlineToXml()` above, and for the same reason: a
+    // serializer owes the caller the *complete* document, not whatever subtree
+    // happens to be hoisted into view. Without `withFullTree` this walked
+    // `root`'s children directly, so while hoisted the displaced parts of the
+    // tree — held as detached DOM by `applyHoist` — were simply unreachable
+    // and a "save as text" made from a hoisted view wrote out only the hoisted
+    // subtree, silently truncating the file. Worse, it disagreed with
+    // `outlineToXml()` on the same document at the same moment: two public
+    // serializers, two different answers. `find()` deliberately stays on the
+    // other side of this line (it searches only the hoisted view, because the
+    // user narrowed focus on purpose) — serializers do not.
+    return this.withFullTree(() => {
+      let text = ''
+      for (const n of childNodes(this.root)) text += this.o.editor.textLine(n)
+      return text
+    })
   }
 
   saveCursor(): number {

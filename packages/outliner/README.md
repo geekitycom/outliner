@@ -197,10 +197,13 @@ Hoisting is purely a view operation on the live DOM (the displaced part of the
 tree is stashed as detached elements, not round-tripped through OPML), so
 in-place edits made while hoisted — and the collapsed/expanded state and
 cursor position of the parts you can currently see — are preserved exactly
-when you de-hoist. Critically, **`toOpml()`, `getTitle()`, and `getHeaders()`
-always reflect the complete document, regardless of hoist state** — a `save()`
-made while hoisted writes out the whole outline, not just the hoisted
-subtree. `expandToLevel()` also nests correctly: it always operates on
+when you de-hoist. Critically, **`toOpml()`, `toText()`, `getTitle()`, and
+`getHeaders()` always reflect the complete document, regardless of hoist
+state** — a `save()` made while hoisted writes out the whole outline, not just
+the hoisted subtree. The rule is that *serializers reflect the whole document,
+view operations act on the hoisted view*; `find()` is the deliberate exception
+in the other direction (see Finding below). `expandToLevel()` also nests
+correctly: it always operates on
 whatever's currently at the top of the view (the real root, or the hoisted
 node), the same as `expand()`/`collapse()` do.
 

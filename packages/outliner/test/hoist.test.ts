@@ -90,6 +90,32 @@ describe('hoist / de-hoist', () => {
     expect(o.hoistDepth()).toBe(2)
   })
 
+  it('toText() returns the complete document while hoisted, at any depth', () => {
+    // The companion of the toOpml() case above. Both are *serializers*, so
+    // both owe the caller the whole document however deep the view is
+    // narrowed; a Save-As-Text made while hoisted that wrote only the hoisted
+    // subtree would silently truncate the user's file. The expected strings
+    // are written out literally rather than derived from `doc`, so this can
+    // never agree with a broken implementation by construction.
+    const doc = opml(
+      '<outline text="a"><outline text="b"><outline text="c"/><outline text="d"/></outline><outline text="e"/></outline><outline text="f"/>',
+    )
+    const o = mount(doc)
+    const fullText = 'a\n\tb\n\t\tc\n\t\td\n\te\nf\n'
+    expect(o.toText()).toBe(fullText)
+
+    o.hoist() // -> view [b, e]
+    expect(o.toText()).toBe(fullText)
+    // toText() must not itself disturb the hoisted view.
+    expect(viewTexts(o)).toEqual(['b', 'e'])
+    expect(o.isHoisted()).toBe(true)
+
+    o.hoist() // -> view [c, d], depth 2
+    expect(o.toText()).toBe(fullText)
+    expect(viewTexts(o)).toEqual(['c', 'd'])
+    expect(o.hoistDepth()).toBe(2)
+  })
+
   it('getTitle() / getHeaders() reflect the full document regardless of hoist state', () => {
     const o = mount(opml('<outline text="p"><outline text="c1"/></outline>'))
     o.setTitle('My Doc')
