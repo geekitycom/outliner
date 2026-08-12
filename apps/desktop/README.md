@@ -4,7 +4,8 @@
 identifier `com.geekity.flow`) that mounts `@andrewshell/outliner` full-window. It's
 chrome-free — no toolbar — because the outliner is keyboard-driven; everything that would be a
 toolbar button is a menu item or a keystroke instead. **Help → Keyboard Shortcuts** opens an
-in-app modal listing them.
+in-app modal listing them, derived from the menu manifest and the library's own keystroke table
+rather than transcribed from either.
 
 The workspace package name stays `outliner-desktop` (and the directory `apps/desktop`) — those
 are internal identifiers used by `pnpm --filter` and CI, not user-visible, so renaming them
@@ -188,6 +189,10 @@ a change to this code on a fresh app identity, or by explicitly hiding the bar f
 
 ## Menu layout
 
+Every **custom** item below is declared once in `menu.json` — id, label, accelerator, submenu,
+grouping, description — and read from there by both the Rust menu builder and the frontend; see
+design note 12 for why. The predefined native items are not in that file and never should be.
+
 - **GeekityFlow** (macOS app menu) — About, Services, Hide/Hide Others/Show All (all predefined),
   and Quit (`Cmd/Ctrl-Q`, deliberately a *custom* item, not predefined — see "Design notes" below
   for why).
@@ -252,7 +257,7 @@ a change to this code on a fresh app identity, or by explicitly hiding the bar f
 
 ## Design notes
 
-Eleven choices here look like omissions or overengineering but aren't — please don't "fix" them
+Twelve choices here look like omissions or overengineering but aren't — please don't "fix" them
 without reading this first.
 
 **1. The menu is built in Rust (`build_menu` in `src-tauri/src/lib.rs`), not JS.** It used to be
@@ -364,8 +369,9 @@ interaction" (in practice, the last window closing) or triggered programmaticall
 `AppHandle::exit`/`restart`. A predefined Quit item's `terminate:` bypasses all of that — the
 process just tears down mid-edit, discarding whatever's unsaved in every open window, with no
 Rust-side hook that ever runs. A *custom* menu item doesn't have this problem: it emits a menu
-event like every other custom item here (see the "quit" `MenuItemBuilder` in `build_menu` and
-the `"quit"` case in `on_menu_event`), which keeps Cmd-Q inside code this app controls instead of
+event like every other custom item here (see the `"quit"` entry in `menu.json`, which `build_menu`
+turns into a menu item, and the `"quit"` case in `on_menu_event`), which keeps Cmd-Q inside code
+this app controls instead of
 handing it straight to the OS. If you're looking at this thinking "why isn't Quit just
 `.quit()` like Close Window is `.close_window()`" — this is why, and switching it back
 silently reintroduces the data loss it exists to prevent.
@@ -549,6 +555,57 @@ queried fresh, never tracked) — it is scoped as narrowly as possible, to just 
 change-detection job, specifically so a wrong guess here stays contained to "the tab bar
 occasionally doesn't force itself back on after an edge-case drag sequence" rather than
 resurfacing the stale-group bugs that design decision was written to avoid.
+
+**12. Every custom menu item is declared once, in `menu.json`, which both languages read — and
+the menu is still built in Rust.** An item used to be written out four times: a
+`MenuItemBuilder` in `build_menu`, a `match` arm on its id in `on_menu_event`, the
+`"menu-<id>"` string that arm emitted, and the listener for that same string in `main.ts`. All 23
+arms of that match were identical modulo the string — the whole block computed
+`format!("menu-{id}")` — and a fifth copy existed as prose in `src/shortcuts.ts`. Every one of
+those copies could be mistyped with **no compile error, no runtime error and no symptom**: the
+menu item drew perfectly and did nothing when clicked. That is the failure this exists to make
+unrepresentable, and it's worth being precise about how: the point isn't that four copies are
+tedious to update, it's that nothing anywhere could tell you they disagreed.
+
+`menu.json` carries each item's id, label, accelerator, submenu, whether a separator precedes it,
+and a one-line description. Rust embeds it with `include_str!` and deserializes it with serde
+(`build_menu` builds the custom items from it; `on_menu_event`'s dispatch is now a single
+`emit_to(label, menu_event_name(id))`); `src/menu.ts` imports the same file for the frontend.
+A **shared file, not a generator**: codegen would have made the two sides agree at the moment the
+generator last ran, whereas reading the same bytes makes disagreement unrepresentable rather than
+merely detectable, and it costs one JSON parse at startup.
+
+Four consequences worth knowing before editing any of this:
+
+- **The menu is still built in Rust, and design note 1 above still binds.** This moved the
+  strings, not the construction. A JS-built menu's `action` callback runs in the webview that
+  built the menu, so File > Save saves the wrong document as soon as a second window exists.
+  Adding an item to `menu.json` does not make it a frontend concern.
+- **Predefined native items are deliberately not in the manifest.** Cut/Copy/Paste, About,
+  Services, Hide, Minimize, Zoom and everything macOS appends to the Window menu are routed by
+  the OS through the responder chain to the focused window, with no app code involved — they have
+  no id to dispatch and no event to listen for. The manifest covers the custom items, which are
+  exactly the ones this app has to route itself.
+- **Behaviour can't be serialised, so it stays in TypeScript** — `src/actions.ts`, keyed by the
+  manifest's own ids, with a test asserting every id either has a handler or is one of the five
+  window-level items Rust routes itself (`new`, `new-window`, `close-tab`, `close-window`,
+  `quit`). Those five keep their explicit branches in `on_menu_event` because each does something
+  genuinely different with *windows*, which is not a matter of asking one document's frontend a
+  question.
+- **A manifest that's wrong is a build failure, not a runtime surprise.** `src-tauri/build.rs`
+  parses and validates the same file (through `serde_json::Value`, deliberately not through the
+  crate's own structs — an independent reading is the only kind that can disagree) before the
+  crate compiles, so malformed JSON, a misspelled field name, a duplicate id or a dangling
+  submenu reference fails `cargo check`. A misspelled `"acclerator"` would otherwise deserialize
+  happily into an item with no accelerator and no complaint.
+
+The Help ▸ Keyboard Shortcuts sheet is the fifth consumer: it derives its app rows from this
+manifest and its library rows from `CONCORD_KEYSTROKES` (exported from `@andrewshell/outliner`
+for exactly this), so it can no longer drift from either. It had — `Cmd-F`, `Cmd-G`, `Cmd-Shift-N`,
+`Cmd-W`, `Cmd-Shift-W` and `Cmd-Q` were all bound and undocumented, and `Cmd-,` was filed under
+the app's own group though the library binds it. What stays hand-written there is only what
+neither source contains: which group a shortcut belongs in, what order the rows read in, and what
+each library command does.
 
 ## Known limitations
 

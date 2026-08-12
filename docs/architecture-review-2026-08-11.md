@@ -41,7 +41,7 @@ open dialog.
 
 ---
 
-## 2. One command catalogue, not four spellings — **Strong**
+## 2. One command catalogue, not four spellings — **DONE**
 
 **Files:** `apps/desktop/src-tauri/src/lib.rs:710-992, 1116-1195` ·
 `apps/desktop/src/main.ts:159-207` · `apps/desktop/src/shortcuts.ts:23-89` ·
@@ -76,6 +76,37 @@ adding an item touches one file.
 **Does not contradict design note 1.** The menu stays built in Rust and dispatch
 stays `emit_to`-the-focused-window. This removes the restatement of ids, not the
 architecture that note defends.
+
+**Shipped** on `refactor/command-catalogue`, as `apps/desktop/menu.json` — a shared
+JSON manifest read by both languages (Rust via `include_str!` + serde, TS via
+`src/menu.ts`), described in design note 12 of `apps/desktop/README.md`. Three
+deliberate departures from the sketch above:
+
+- **The catalogue holds no `run`.** A closure doesn't serialise, so behaviour stays
+  in TypeScript (`src/actions.ts`), keyed by the manifest's ids, with a test
+  asserting every id has a handler or is one of the five window-level items Rust
+  routes itself. Everything *else* about an item is data.
+- **A shared file, not codegen.** Generating one side from the other makes the two
+  agree as of the last generator run; reading the same bytes makes disagreement
+  unrepresentable. `src-tauri/build.rs` validates the file independently (through
+  `serde_json::Value`, not the crate's structs), so a malformed manifest fails
+  `cargo check` rather than the running app.
+- **The demo toolbar was left alone.** `packages/outliner/example/main.ts` is the
+  library's demo; wiring it to the desktop app's menu manifest would point a
+  package at an app that depends on it. What the library did gain is an export of
+  `CONCORD_KEYSTROKES`, which is what the shortcuts sheet needed.
+
+Result: the 23-arm `match` is one `emit_to`, and the sheet's drift is fixed —
+`Cmd-F`, `Cmd-G`, `Cmd-Shift-N`, `Cmd-W`, `Cmd-Shift-W` and `Cmd-Q` are documented
+and `Cmd-,` is filed as the library keystroke it is. Desktop tests 12 → 41, Rust
+tests 0 → 5.
+
+Worth being honest about the line count, since "deletes ~80 lines of Rust" was
+claimed above: 239 lines came out of `lib.rs` and roughly the same number went back
+in as manifest plumbing, most of it doc comment, so production `lib.rs` is about
+where it started (a 268-line test module is the rest of its growth). `main.ts` did
+shrink, 218 → 152. The win was never the line count — it is that the four places an
+id could be mistyped are now one place it can't be.
 
 ---
 
