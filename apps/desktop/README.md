@@ -358,7 +358,7 @@ dirty marker) and the red traffic-light close button ended up doing nothing for 
 called `setTitle()`/`destroy()` without either permission granted, and both call sites `void`-ed
 the returned promise. Both are now covered by explicit `core:window:allow-set-title` and
 `core:window:allow-destroy` entries, and both call sites now surface a rejection (see
-`syncTitle()` in `src/document.ts` and `closeWindow()` in `src/main.ts`). Any *new* window
+`syncTitle()` in `src/document.ts` and `closeTab()` in `src/main.ts`). Any *new* window
 operation (`setSize`, `center`, `minimize`, `setFullscreen`, ...) needs its own explicit
 `core:window:allow-*` entry added to `capabilities/default.json` — check
 `src-tauri/gen/schemas/macOS-schema.json` for the exact permission string, and don't assume
@@ -367,9 +367,9 @@ window creation happens entirely in Rust via `WebviewWindowBuilder` (never expos
 frontend as an invokable command), and resolving/emitting to the focused window are plain Rust
 API calls, not IPC — the ACL only gates frontend-to-backend `invoke()` calls. `listen()` on the
 frontend side needed nothing new either: `core:event:default` (which covers `allow-listen`) is
-already pulled in by `core:default`. The custom `open_path_in_new_window` command follows the
+already pulled in by `core:default`. The custom `open_path_in_new_tab` command follows the
 same pattern as `read_file`/`write_file` below — an app-defined command, not a plugin command,
-so it isn't ACL-gated at all.
+so it isn't ACL-gated at all, and neither are `set_dirty` or `flow_response`.
 
 **5. A capability has two independent gates: which permissions it grants, and which
 *windows* it applies to.** Granting a permission does nothing for a window the capability
