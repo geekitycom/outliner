@@ -224,6 +224,14 @@ impl Windows {
   pub fn stale(&self) -> &[String] {
     &self.stale
   }
+
+  /// This snapshot with `label` no longer dirty — how the world looks once a
+  /// `MarkClean` step has been carried out.
+  fn marked_clean(&self, label: &str) -> Windows {
+    let mut next = self.clone();
+    next.dirty.remove(label);
+    next
+  }
 }
 
 /// The whole flow, as one total function from (state, input, world) to (new
@@ -236,8 +244,35 @@ impl Windows {
 pub fn advance(pending: Option<&Flow>, input: Input, windows: &Windows) -> Outcome {
   match input {
     Input::StartQuit => drive(Flow::Quit, windows, Vec::new()),
-    _ => todo!(),
+    Input::StartCloseGroup { .. } => todo!(),
+    Input::Resolved { label, response } => resolved(pending, &label, response, windows),
   }
+}
+
+/// A prompt came back with an answer.
+fn resolved(pending: Option<&Flow>, label: &str, response: Response, windows: &Windows) -> Outcome {
+  let _ = response;
+
+  // Marked clean here rather than left to the frontend's own `set_dirty`
+  // call: that call and this answer are sent in order from the same webview,
+  // but nothing guarantees Rust *processes* two independent IPC calls in
+  // send order, and racing that would make the walk's progress
+  // non-deterministic.
+  let mut steps = vec![Step::MarkClean {
+    label: label.to_string(),
+  }];
+  let Some(flow) = pending else {
+    // An answer with nothing pending should not be possible — only a
+    // `Step::Prompt` asks the question — but if one arrives, the fact it
+    // reports is still true: the frontend has saved or discarded, so a map
+    // that said otherwise would be a lie that blocks the *next* quit.
+    return Outcome { pending: None, steps };
+  };
+
+  // The rest of this call has to reason about the world it is itself
+  // creating, not the one it was handed: the window that just answered is no
+  // longer dirty, and asking about it again would prompt it forever.
+  drive(flow.clone(), &windows.marked_clean(label), steps)
 }
 
 /// Works out the next thing to wait on, appending to `steps` whatever has to
@@ -371,4 +406,141 @@ mod tests {
     );
     assert_eq!(outcome.pending, Some(Flow::Quit));
   }
+
+  // ---- Sequences ---------------------------------------------------------
+
+  /// A stand-in for the app: the two pieces of world `advance` reads, plus
+  /// the `PendingFlow` slot, driven exactly the way `lib.rs`'s adapter
+  /// drives them.
+  ///
+  /// The point of these tests is that a *sequence* is where this flow's real
+  /// failures live — cancel mid-walk, a window vanishing between two
+  /// answers, an exit that has to survive its own re-entrant dirty check.
+  /// None of those can be seen in a single call, so the harness replays a
+  /// whole flow and records what happened.
+  struct App {
+    dirty: HashMap<String, bool>,
+    live: Vec<String>,
+    pending: Option<Flow>,
+    /// Every step carried out so far, in order, across the whole flow.
+    log: Vec<Step>,
+    exited: bool,
+  }
+
+  impl App {
+    fn new(dirty_entries: &[(&str, bool)], live_labels: &[&str]) -> Self {
+      App {
+        dirty: dirty(dirty_entries),
+        live: live(live_labels),
+        pending: None,
+        log: Vec::new(),
+        exited: false,
+      }
+    }
+
+    fn windows(&self) -> Windows {
+      Windows::new(&self.dirty, &self.live)
+    }
+
+    /// One turn of the adapter's loop: ask the machine, store the new
+    /// pending state, carry out the steps. Deliberately the same shape as
+    /// `lib.rs`'s executor, so a step this harness cannot carry out is a
+    /// step the real adapter has no business inventing either.
+    fn send(&mut self, input: Input) -> &mut Self {
+      let outcome = advance(self.pending.as_ref(), input, &self.windows());
+      self.pending = outcome.pending;
+      for step in outcome.steps {
+        match &step {
+          Step::Forget { label } => {
+            self.dirty.remove(label);
+          }
+          Step::MarkClean { label } => {
+            self.dirty.insert(label.clone(), false);
+          }
+          Step::Prompt { .. } => {}
+          Step::Destroy { label } => {
+            // The real adapter's destroy() also triggers the Destroyed
+            // handler that drops the dirty entry — see design note 8.
+            self.live.retain(|l| l != label);
+            self.dirty.remove(label);
+          }
+          Step::Exit => {
+            // The exit re-enters RunEvent::ExitRequested, which re-checks
+            // the same state through the same accessor. Recording the
+            // answer here is how the exit-deadlock property gets asserted
+            // rather than argued about.
+            self.exited = !self.windows().any_dirty();
+          }
+        }
+        self.log.push(step);
+      }
+      self
+    }
+
+    /// The labels prompted so far, in order — the walk, as the user saw it.
+    fn prompted(&self) -> Vec<&str> {
+      self
+        .log
+        .iter()
+        .filter_map(|step| match step {
+          Step::Prompt { label, .. } => Some(label.as_str()),
+          _ => None,
+        })
+        .collect()
+    }
+  }
+
+  /// The ordinary Quit: every dirty window is asked, one at a time, and the
+  /// app exits once the last one answers. Nothing is destroyed along the way
+  /// — a window survives a quit; the process exit is what closes it.
+  #[test]
+  fn quit_asks_every_dirty_window_in_turn_then_exits() {
+    let mut app = App::new(
+      &[("win-1", true), ("win-2", false), ("win-3", true)],
+      &["win-1", "win-2", "win-3"],
+    );
+
+    app.send(Input::StartQuit);
+    assert_eq!(app.prompted(), vec!["win-1"]);
+
+    app.send(Input::Resolved {
+      label: "win-1".to_string(),
+      response: Response::Proceed,
+    });
+    assert_eq!(app.prompted(), vec!["win-1", "win-3"]);
+
+    app.send(Input::Resolved {
+      label: "win-3".to_string(),
+      response: Response::Proceed,
+    });
+
+    assert_eq!(app.prompted(), vec!["win-1", "win-3"]);
+    assert!(app.log.contains(&Step::Exit));
+    assert!(!app.log.iter().any(|s| matches!(s, Step::Destroy { .. })));
+    assert_eq!(app.pending, None);
+  }
+
+  /// The exit-deadlock property, pinned. `app.exit(0)` re-triggers
+  /// `RunEvent::ExitRequested`, which re-checks the dirty state — so the
+  /// flow only gets to exit if that state is *genuinely* clean by then, with
+  /// no bypass flag anywhere. `App::exited` is set only when the re-check
+  /// agrees, so a machine that reached Exit while a live window was still
+  /// dirty would leave it false: the app that refuses to quit against its
+  /// own exit call.
+  #[test]
+  fn quit_only_exits_once_the_dirty_state_is_honestly_clean() {
+    let mut app = App::new(&[("win-1", true)], &["win-1"]);
+
+    app.send(Input::StartQuit);
+    assert!(!app.exited, "must not exit while win-1 is unresolved");
+
+    app.send(Input::Resolved {
+      label: "win-1".to_string(),
+      response: Response::Proceed,
+    });
+
+    assert!(app.exited, "the re-entrant dirty check must let this exit through");
+    assert!(!app.windows().any_dirty());
+  }
 }
+
