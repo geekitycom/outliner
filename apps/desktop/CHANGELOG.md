@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/geekitycom/outliner/compare/desktop-v0.2.0...desktop-v0.2.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* **desktop:** stop a window dying mid-prompt from stranding the flow ([b702224](https://github.com/geekitycom/outliner/commit/b7022241c46a974d87cde11e709cd498a48a989a))
+
 ## [0.2.0](https://github.com/geekitycom/outliner/compare/desktop-v0.1.0...desktop-v0.2.0) (2026-08-12)
 
 
