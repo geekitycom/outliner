@@ -156,7 +156,7 @@ job's very first run on `main` failed, exposing a pre-existing macOS-only
 `tabbing_identifier` call in `create_document_window` that had never been compiled
 for Linux.
 
-### Follow-up: the flow can stall if a window dies mid-prompt
+### Follow-up: the flow can stall if a window dies mid-prompt — **DONE**
 
 **Not introduced by this work — the old code had the same race**, with its liveness
 check sitting microseconds earlier in the same sequence. Recorded here because the
@@ -186,6 +186,17 @@ Two directions, neither explored:
 Either is a table test in `flow.rs` plus a few lines in the adapter. The reason to
 prefer the first is that it keeps the adapter free of judgement: "this window is
 gone" is an observation, "therefore skip it" is a decision.
+
+**Shipped** as the first direction, with one departure from the sketch: the adapter
+reports a new `Input::Vanished { label }` rather than a synthetic
+`Resolved { Proceed }`. The synthetic answer would have had the adapter claim a
+person answered a prompt nobody ever saw, and the machine would then have acted on
+that claim — `MarkClean` *inserts*, so it would resurrect a dirty-map entry the
+`Destroyed` cleanup had already dropped, and on the Close Window walk it would have
+produced a `Destroy` justified by a choice the user never made. `Vanished` says only
+what was seen; `flow.rs` decides that the walk steps over it and carries on, by
+re-driving through the dead-window handling that already existed. Rust tests 20 → 22,
+one per flow.
 
 ---
 

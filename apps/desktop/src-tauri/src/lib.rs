@@ -196,6 +196,13 @@ fn run_flow(app: &tauri::AppHandle, input: flow::Input) {
     outcome.steps
   };
 
+  // An observation to report back once the steps are done — see the `Prompt`
+  // arm. Collected rather than acted on in place because feeding it in means
+  // re-entering this function, and doing that from inside the loop would run
+  // the rest of these steps *after* the machine had already moved on from
+  // them. Fed in below, once the loop is over and nothing is in flight.
+  let mut observed: Option<flow::Input> = None;
+
   for step in steps {
     match step {
       flow::Step::Forget { label } => {
@@ -221,10 +228,32 @@ fn run_flow(app: &tauri::AppHandle, input: flow::Input) {
         // emit_to the one label, NEVER a broadcast emit: that would run the
         // unsaved-changes prompt in every open window at once instead of the
         // one whose turn it is.
-        if let Some(window) = app.get_webview_window(&label) {
-          let _ = window.set_focus();
+        //
+        // The liveness re-check is the one thing in this arm that is not
+        // simply "do as told". The machine decided from a `Windows` snapshot
+        // read at the top of this function, and the user can close a window
+        // at any moment after that — including in the gap between that
+        // decision and this line. Emitting into the gap is silent: `emit_to`
+        // an unknown label is not an error worth reporting, no answer ever
+        // comes back, `PendingFlow` stays `Some`, and the re-entrancy guard
+        // then correctly refuses every later Cmd-Q. The app becomes
+        // unquittable from its own menu with nothing on screen to explain it
+        // — the same failure class design note 8 exists to prevent.
+        //
+        // So: no window, no emit, and report `Vanished` instead. Note the
+        // shape of that — this arm decides nothing about what a dead target
+        // means for the flow. It reports an observation; `flow::advance`
+        // decides that the walk steps over it and carries on. Anything more
+        // opinionated here (say, quietly moving to the next dirty window)
+        // would be policy in the adapter, which is exactly what the flow.rs
+        // seam exists to prevent.
+        match app.get_webview_window(&label) {
+          Some(window) => {
+            let _ = window.set_focus();
+            let _ = app.emit_to(&label, event, ());
+          }
+          None => observed = Some(flow::Input::Vanished { label }),
         }
-        let _ = app.emit_to(&label, event, ());
       }
       flow::Step::Destroy { label } => {
         // Gone already is a fine outcome for "close this window" — the
@@ -243,6 +272,16 @@ fn run_flow(app: &tauri::AppHandle, input: flow::Input) {
         app.exit(0);
       }
     }
+  }
+
+  // Re-entering with what the emit above could not do. Safe to recurse: the
+  // `PendingFlow` lock was released before the step loop began (see this
+  // function's doc comment), and each pass either delivers a prompt, reaches
+  // a terminal step, or removes one more dead window from consideration — so
+  // the depth is bounded by the number of windows that died in the gap, and
+  // in practice is one.
+  if let Some(input) = observed {
+    run_flow(app, input);
   }
 }
 

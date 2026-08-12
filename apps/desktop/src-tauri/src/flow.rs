@@ -87,6 +87,33 @@ pub enum Input {
   StartCloseGroup { group: Vec<String> },
   /// A prompt that a `Step::Prompt` triggered has come back with an answer.
   Resolved { label: String, response: Response },
+  /// A `Step::Prompt` could not be delivered: the window it named was gone by
+  /// the time the adapter went to emit to it.
+  ///
+  /// This exists because the machine reasons about a `Windows` snapshot read
+  /// once, at the top of the adapter's turn, and the user can close a window
+  /// at any point after that — including in the gap between the decision and
+  /// the `Prompt` step that carries it out. The machine's own dead-window
+  /// handling (the `live` intersection in `Windows`) is correct and always
+  /// was; it simply cannot see a window that died after it was consulted.
+  /// Only the adapter, at the moment of emitting, is in a position to notice,
+  /// so it reports what it saw and this module decides what that means.
+  ///
+  /// Emitting into that gap is silent, and silence is the whole problem: no
+  /// answer ever comes back, `PendingFlow` stays `Some`, and the re-entrancy
+  /// guard above then correctly refuses every later Cmd-Q. The app cannot be
+  /// quit from its own menu, with no visible prompt explaining why.
+  ///
+  /// Note what this variant is NOT: it is not a synthetic
+  /// `Resolved { Proceed }`, which was the first shape considered. That would
+  /// have the adapter claim a person answered a prompt nobody ever saw — and
+  /// the machine, believing it, would emit `MarkClean` for a window that no
+  /// longer exists (`MarkClean` *inserts*, so it would resurrect a dirty-map
+  /// entry the `Destroyed` cleanup had already dropped) and, on the Close
+  /// Window walk, a `Destroy` justified by a decision the user never made.
+  /// "This window is gone" is an observation; "therefore skip it" is a
+  /// decision, and decisions belong in here.
+  Vanished { label: String },
 }
 
 /// One effect for the adapter in `lib.rs` to carry out, in the order given.
@@ -271,7 +298,37 @@ pub fn advance(pending: Option<&Flow>, input: Input, windows: &Windows) -> Outco
       None => drive(Flow::CloseGroup { remaining: group }, windows, Vec::new()),
     },
     Input::Resolved { label, response } => resolved(pending, &label, response, windows),
+    Input::Vanished { label } => vanished(pending, &label, windows),
   }
+}
+
+/// A prompt could not be delivered because its target window no longer
+/// exists. The decision, in one line: treat the window as gone and carry on
+/// walking. Nobody is left to veto, so nothing here aborts the flow — the
+/// whole point is that a window dying must not be able to make the app
+/// unquittable, which is precisely what stopping here would do.
+///
+/// The world this re-drives from is the one the observation describes, not
+/// the one the (already stale, by definition) snapshot describes: `destroyed`
+/// takes the label out of both the live and the dirty sets. That matters even
+/// though the adapter re-reads the world before calling in, because the two
+/// reads are of different things — `get_webview_window` for the emit, and
+/// `webview_windows` for the snapshot — and the machine should not depend on
+/// them agreeing. From there it is `drive` again, with no special case: the
+/// dead-window handling that already existed is what steps over it.
+fn vanished(pending: Option<&Flow>, label: &str, windows: &Windows) -> Outcome {
+  let Some(flow) = pending else {
+    // No flow running, so nothing was prompted and nothing needs stepping
+    // over. Unlike a stray `Resolved`, this input carries no fact worth
+    // recording: a window that does not exist is already handled everywhere
+    // by `Windows`, and the `Destroyed` cleanup owns dropping its entry.
+    return Outcome {
+      pending: None,
+      steps: Vec::new(),
+    };
+  };
+
+  drive(flow.clone(), &windows.destroyed(label), Vec::new())
 }
 
 /// A start request that arrived while a flow was already running: keep the
@@ -532,9 +589,20 @@ mod tests {
     dirty: HashMap<String, bool>,
     live: Vec<String>,
     pending: Option<Flow>,
-    /// Every step carried out so far, in order, across the whole flow.
+    /// Every step the adapter actually carried out, in order, across the
+    /// whole flow. A `Prompt` the adapter declined to emit (see
+    /// `vanish_before_prompt`) is not in here, because it never happened.
     log: Vec<Step>,
     exited: bool,
+    /// Labels whose window is destroyed in the instant *between* the
+    /// `Windows` snapshot being taken and that window's `Prompt` step being
+    /// carried out. That gap is a real race — the snapshot is read once at
+    /// the top of the adapter's turn, and the user can close a window at any
+    /// point after it — and it is the one gap the machine cannot see on its
+    /// own, since by construction every input it gets describes the world as
+    /// it was, not as it is. Making it deterministic here is the only way to
+    /// assert anything about it at all.
+    vanish_before_prompt: BTreeSet<String>,
   }
 
   impl App {
@@ -545,7 +613,18 @@ mod tests {
         pending: None,
         log: Vec::new(),
         exited: false,
+        vanish_before_prompt: BTreeSet::new(),
       }
+    }
+
+    /// Arrange for `label`'s window to be gone by the time the walk tries to
+    /// prompt it, while still being live in the snapshot the walk decided
+    /// from. Its dirty entry is deliberately left behind when it goes, since
+    /// `WindowEvent::Destroyed` has not been delivered yet — that lag is
+    /// exactly what makes this a race rather than a tidy state change.
+    fn vanish_before_prompt(&mut self, label: &str) -> &mut Self {
+      self.vanish_before_prompt.insert(label.to_string());
+      self
     }
 
     fn windows(&self) -> Windows {
@@ -559,7 +638,15 @@ mod tests {
     fn send(&mut self, input: Input) -> &mut Self {
       let outcome = advance(self.pending.as_ref(), input, &self.windows());
       self.pending = outcome.pending;
+      // An observation the adapter has to feed back before this turn is
+      // over, fed in after the steps rather than during them so this mirrors
+      // the real adapter, which cannot re-enter `run_flow` mid-loop.
+      let mut follow_up: Option<Input> = None;
       for step in outcome.steps {
+        // Whether the step actually happened. Only `Prompt` can come out
+        // false: everything else is a map write or a call that tolerates a
+        // window having gone.
+        let mut carried_out = true;
         match &step {
           Step::Forget { label } => {
             self.dirty.remove(label);
@@ -567,7 +654,23 @@ mod tests {
           Step::MarkClean { label } => {
             self.dirty.insert(label.clone(), false);
           }
-          Step::Prompt { .. } => {}
+          Step::Prompt { label, .. } => {
+            // The window is destroyed right here, after the snapshot the
+            // machine decided from and before this prompt lands.
+            if self.vanish_before_prompt.remove(label) {
+              self.live.retain(|l| l != label);
+            }
+            // The adapter's liveness re-check, in the same place the real one
+            // sits: immediately before the emit, because that is the only
+            // moment anything can know. It reports the observation and emits
+            // nothing; what to do about it is decided back in `advance`.
+            if !self.live.contains(label) {
+              carried_out = false;
+              follow_up = Some(Input::Vanished {
+                label: label.clone(),
+              });
+            }
+          }
           Step::Destroy { label } => {
             // The real adapter's destroy() also triggers the Destroyed
             // handler that drops the dirty entry — see design note 8.
@@ -582,7 +685,12 @@ mod tests {
             self.exited = !self.windows().any_dirty();
           }
         }
-        self.log.push(step);
+        if carried_out {
+          self.log.push(step);
+        }
+      }
+      if let Some(input) = follow_up {
+        self.send(input);
       }
       self
     }
@@ -716,6 +824,85 @@ mod tests {
       label: "win-2".to_string()
     }));
     assert!(app.exited);
+  }
+
+  /// The narrower version of the same race, and the one that used to strand
+  /// the app: the window is still live when the snapshot is taken and gone by
+  /// the time its own `Prompt` step is carried out.
+  ///
+  /// Emitting into that gap is silent. The event goes to a label with no
+  /// webview behind it, no answer ever comes back, `PendingFlow` stays
+  /// `Some`, and the re-entrancy guard — doing exactly its job — then refuses
+  /// every later Cmd-Q. The app cannot be quit from its own menu and shows
+  /// nothing explaining why, which is the same "unquittable process" class of
+  /// failure as design note 8 in apps/desktop/README.md.
+  ///
+  /// The fix keeps the judgement here rather than in the adapter: the adapter
+  /// re-checks liveness before emitting and reports what it saw
+  /// (`Input::Vanished`), and this module decides what that means — step over
+  /// it, carry on down the list, and still reach `Exit`.
+  #[test]
+  fn a_window_that_dies_between_the_snapshot_and_its_prompt_does_not_strand_the_flow() {
+    let mut app = App::new(&[("win-1", true), ("win-2", true)], &["win-1", "win-2"]);
+    app.vanish_before_prompt("win-1");
+
+    app.send(Input::StartQuit);
+
+    // win-1 was the machine's choice, and it was the right one from the
+    // snapshot it had. What must not happen is a prompt emitted into the
+    // void and a walk that stops there.
+    assert_eq!(
+      app.prompted(),
+      vec!["win-2"],
+      "win-1 had gone by the time its prompt ran: the walk must move on to win-2"
+    );
+    assert_eq!(app.pending, Some(Flow::Quit), "still waiting on win-2's answer");
+    assert!(
+      app.log.contains(&Step::Forget {
+        label: "win-1".to_string()
+      }),
+      "the dead window's dirty entry is dropped on the way past"
+    );
+
+    app.send(Input::Resolved {
+      label: "win-2".to_string(),
+      response: Response::Proceed,
+    });
+
+    assert_eq!(app.prompted(), vec!["win-2"]);
+    assert!(app.exited, "the quit must still complete");
+    assert_eq!(app.pending, None, "and must not leave a flow pending forever");
+  }
+
+  /// The same race on the Close Window walk, where the consequence is
+  /// different but no better: the group stops halfway, with tabs the user
+  /// asked to close still open and no flow left that will ever close them.
+  #[test]
+  fn a_tab_that_dies_between_the_snapshot_and_its_prompt_does_not_strand_the_group() {
+    let mut app = App::new(
+      &[("win-1", true), ("win-2", true), ("win-3", false)],
+      &["win-1", "win-2", "win-3"],
+    );
+    app.vanish_before_prompt("win-1");
+
+    app.send(Input::StartCloseGroup {
+      group: live(&["win-1", "win-2", "win-3"]),
+    });
+
+    assert_eq!(
+      app.prompted(),
+      vec!["win-2"],
+      "win-1 closed itself; the walk carries on to the next tab in the group"
+    );
+
+    app.send(Input::Resolved {
+      label: "win-2".to_string(),
+      response: Response::Proceed,
+    });
+
+    assert_eq!(app.live, Vec::<String>::new(), "the whole group still closes");
+    assert_eq!(app.pending, None);
+    assert!(!app.log.contains(&Step::Exit), "closing a group never quits the app");
   }
 
   /// The re-entrancy trap, and the reason both flows go through one
