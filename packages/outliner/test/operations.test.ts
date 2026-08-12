@@ -88,6 +88,69 @@ describe('structural operations', () => {
     o.expand()
     expect(seen).toEqual(['p'])
   })
+
+  it('the bulk expand/collapse operations mark the document changed', () => {
+    // Expansion state is saved with the document (`<head><expansionState>`),
+    // so changing it changes what a save would write. `expand()`/`collapse()`
+    // have always marked; the bulk forms altered exactly the same class on
+    // many headlines at once and (bar expandToLevel) said nothing, so a
+    // "collapse everything" the user did on purpose could be lost on quit
+    // without ever being offered a save.
+    const doc = opml(
+      '<outline text="p"><outline text="c"><outline text="g"/></outline></outline>',
+    )
+
+    const everything = mount(doc) // built collapsed: no expansionState in the head
+    expect(everything.hasChanged()).toBe(false)
+    everything.expandEverything()
+    expect(everything.hasChanged()).toBe(true)
+
+    const subs = mount(doc)
+    subs.expandAllSubs() // cursor is on "p"
+    expect(subs.hasChanged()).toBe(true)
+
+    const collapsed = mount(doc)
+    collapsed.expandEverything()
+    collapsed.clearChanged()
+    collapsed.collapseEverything()
+    expect(collapsed.hasChanged()).toBe(true)
+
+    const level = mount(doc)
+    level.expandToLevel(2)
+    expect(level.hasChanged()).toBe(true)
+  })
+
+  it('a bulk expand/collapse that changes nothing does not mark the document changed', () => {
+    // The same standard `expand()` is held to: the callback and the changed
+    // flag both mean "this actually happened". Marking on a no-op leaves the
+    // user with an unsaved-changes prompt on quit for a keystroke that altered
+    // nothing -- and teaches them the prompt is noise.
+    const doc = opml(
+      '<outline text="p"><outline text="c"><outline text="g"/></outline></outline>',
+    )
+
+    const everything = mount(doc)
+    everything.expandEverything()
+    everything.clearChanged()
+    everything.expandEverything() // already fully expanded
+    expect(everything.hasChanged()).toBe(false)
+
+    const subs = mount(doc)
+    subs.expandAllSubs()
+    subs.clearChanged()
+    subs.expandAllSubs()
+    expect(subs.hasChanged()).toBe(false)
+
+    const collapsed = mount(doc)
+    collapsed.collapseEverything() // built collapsed already
+    expect(collapsed.hasChanged()).toBe(false)
+
+    const level = mount(doc)
+    level.expandToLevel(2)
+    level.clearChanged()
+    level.expandToLevel(2)
+    expect(level.hasChanged()).toBe(false)
+  })
 })
 
 describe('undo', () => {

@@ -186,6 +186,33 @@ render-mode toggle, undo, cut/copy/paste, OPML import/export, attributes, header
 title, find/find-again, `visitAll`/`visitToSummit`, and remote `open`/`save`
 (now `fetch`-based).
 
+### Expanding and collapsing
+
+`expand()`/`collapse()` act on the cursor headline. The bulk forms act on more
+at once: `expandAllSubs()` opens the cursor headline and everything under it,
+`expandEverything()`/`collapseEverything()` the whole view, and
+`expandToLevel(n)` collapses everything and then reveals down through level `n`
+(1-based, counted from whatever is currently at the top of the view — see
+Hoisting).
+
+**All of them mark the document changed**, because expansion state is part of
+the saved document: `toOpml()` writes it as `<head><expansionState>` and
+`loadOpml()` restores it, so collapsing an outline down to its headings is an
+edit to the file, not just to the screen. Without that, a deliberate reshaping
+of a large outline could be lost on quit with no offer to save it.
+
+**And only when they actually change something.** An `expandEverything()` on an
+already fully-expanded outline, or an `expandToLevel(2)` on an outline already
+at level 2, leaves the saved bytes identical and does *not* mark the document
+changed. This is the same standard `expand()` is held to — it returns early on
+a headline that isn't collapsed, and the `opExpand` callback and the changed
+flag both stay behind that guard, so each means "this really happened".
+
+`collapse()` is the deliberate exception: it marks unconditionally, because
+collapsing an already-collapsed headline is not a no-op — it also closes any
+descendants that were still expanded, which the user cannot see precisely
+because this headline is closed over them.
+
 ### Hoisting
 
 `hoist()` focuses the view on the cursor headline, so its subs become the top
@@ -379,7 +406,8 @@ Three behaviors worth knowing:
   expands every collapsed ancestor needed to make it visible before moving the
   cursor there. Because expansion state is itself persisted in the OPML
   (`<head><expansionState>`), revealing a match this way marks the document
-  changed — the same rule `expand()` follows. A search that matches nothing
+  changed — the same rule `expand()` and the bulk expand/collapse operations
+  follow (see Expanding and collapsing above). A search that matches nothing
   never marks the document changed, whether or not it wrapped.
 - **Hoisting narrows what's searched.** Like `outlineToXml()`, `find()` walks
   from `root`; unlike `outlineToXml()`, it does *not* go through

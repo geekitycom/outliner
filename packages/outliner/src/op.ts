@@ -283,18 +283,67 @@ export class Op {
     this.markChanged()
   }
 
+  // --- bulk expand / collapse -------------------------------------------------
+  //
+  // The four operations below alter the same `collapsed` class that
+  // `expand()`/`collapse()` do, only across many headlines at once, so they owe
+  // the document the same `markChanged()`: expansion state is persisted (it is
+  // written as `<head><expansionState>` by `outlineToXml()` and consumed again
+  // on load), which makes "collapse everything" a real edit to the file. Three
+  // of them said nothing at all, so a deliberate reshaping of a large outline
+  // could be lost on quit without the user ever being offered a save.
+  //
+  // They mark *conditionally*, on the same standard `expand()` is held to: the
+  // flag means the operation really did something. A no-op expand-all on an
+  // already fully-expanded outline leaves the saved bytes identical, and
+  // marking anyway produces an unsaved-changes prompt for a keystroke that
+  // changed nothing -- which is how a user learns to dismiss that prompt
+  // without reading it. `setCollapsed` below is what makes the condition
+  // cheap enough to be worth having.
+
+  /**
+   * Add or remove `collapsed` on `el`, returning whether that was a real
+   * change rather than a request for the state it was already in.
+   *
+   * The return value is the entire reason this exists. `classList.add`/
+   * `remove` are silent about whether they moved anything, and
+   * `classList.toggle(cls, force)` returns the *resulting* state, not whether
+   * it changed -- so a caller reaching for the obvious one-liner gets a value
+   * that is `true` on every expand, no-op or not. Written out by hand at four
+   * call sites, the `contains()` check would eventually be inverted at one of
+   * them, and the failure is silent in both directions: a document that stops
+   * offering to save, or one that always does.
+   *
+   * "A real change" is deliberately the same test `expand()` applies -- did the
+   * class move -- and not "would the serialized `expansionState` differ". Those
+   * come apart only for a childless headline carrying the class (`collapse()`
+   * adds it without checking for subs, and `outlineToXml()` never records a
+   * headline with no subs), and matching `expand()` keeps one rule to remember
+   * rather than two that agree almost everywhere.
+   */
+  private setCollapsed(el: Element, collapsed: boolean): boolean {
+    if (el.classList.contains('collapsed') === collapsed) return false
+    el.classList.toggle('collapsed', collapsed)
+    return true
+  }
+
   expandAllLevels(): void {
     const node = this.getCursor()
     if (!node) return
-    node.classList.remove('collapsed')
-    node
-      .querySelectorAll('.concord-node')
-      .forEach((el) => el.classList.remove('collapsed'))
+    let changed = this.setCollapsed(node, false)
+    // `if (...) changed = true` rather than `changed = f(el) || changed`: the
+    // shorter form short-circuits once something has changed and stops
+    // expanding the rest of the subtree.
+    node.querySelectorAll('.concord-node').forEach((el) => {
+      if (this.setCollapsed(el, false)) changed = true
+    })
+    if (changed) this.markChanged()
   }
 
   fullCollapse(): void {
+    let changed = false
     this.root.querySelectorAll('.concord-node').forEach((el) => {
-      if (childNodes(el).length > 0) el.classList.add('collapsed')
+      if (childNodes(el).length > 0 && this.setCollapsed(el, true)) changed = true
     })
     const cursor = this.getCursor()
     if (cursor) {
@@ -302,12 +351,15 @@ export class Op {
       const top = parents[parents.length - 1]
       if (top) this.o.editor.select(top)
     }
+    if (changed) this.markChanged()
   }
 
   fullExpand(): void {
-    this.root
-      .querySelectorAll('.concord-node')
-      .forEach((el) => el.classList.remove('collapsed'))
+    let changed = false
+    this.root.querySelectorAll('.concord-node').forEach((el) => {
+      if (this.setCollapsed(el, false)) changed = true
+    })
+    if (changed) this.markChanged()
   }
 
   /**
@@ -323,11 +375,11 @@ export class Op {
     const nodes = Array.from(
       this.root.querySelectorAll('.concord-node'),
     ) as HTMLLIElement[]
+    let changed = false
     for (const el of nodes) {
       if (childNodes(el).length === 0) continue
       const depth = nodeParents(el).length + 1
-      if (depth < level) el.classList.remove('collapsed')
-      else el.classList.add('collapsed')
+      if (this.setCollapsed(el, depth >= level)) changed = true
     }
     const cursor = this.getCursor()
     if (cursor) {
@@ -335,7 +387,12 @@ export class Op {
       const top = parents[parents.length - 1]
       if (top) this.o.editor.select(top)
     }
-    this.markChanged()
+    // This one already marked -- it was the only bulk operation that did -- but
+    // unconditionally, so asking for the level the outline is already at
+    // dirtied the document. That is the same defect as the missing calls above,
+    // just pointing the other way, and leaving it would mean the four
+    // operations still disagreed about what the changed flag means.
+    if (changed) this.markChanged()
   }
 
   subsExpanded(): boolean {
