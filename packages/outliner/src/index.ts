@@ -6,6 +6,10 @@ export { NodeRef } from './noderef'
 export { VERSION, EMPTY_OPML } from './constants'
 export { UP, DOWN, LEFT, RIGHT, FLATUP, FLATDOWN, NODIRECTION } from './constants'
 export { appTypeIcons, ICONS, injectIconStyles, iconHtml } from './icons'
+// The keystroke table, so an embedding app can see which keys the outliner
+// already claims instead of guessing or transcribing them. See its doc comment
+// in util.ts for what goes wrong without it — both failures are silent.
+export { CONCORD_KEYSTROKES } from './util'
 // Caret ownership, in place of the no-arg `stopListening()` /
 // `resumeListening()` / `getFocusRoot()` / `setFocusRoot()` API removed at
 // 0.2.0 (docs/adr/0002). Suspending the outliner means taking the caret for

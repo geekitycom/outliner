@@ -30,7 +30,29 @@ export function beep(): void {
   console.log('beep')
 }
 
-const CONCORD_KEYSTROKES: Record<string, string> = {
+/**
+ * Every keystroke the outliner claims, mapped to the command name
+ * `handleKeydown` (keyboard.ts) dispatches on.
+ *
+ * Exported because an app embedding the outliner needs to know which keys are
+ * already spoken for, and had no way to ask. Two things go wrong without it,
+ * both silently: a host that binds one of these keys itself shadows the
+ * outliner's handling of it (on macOS a menu accelerator gets first crack at a
+ * key equivalent, and the outliner's keydown handler then never sees the
+ * keystroke at all), and a host that *documents* these keys to its users has
+ * to transcribe them by hand, which drifts the moment a binding here changes.
+ * The desktop app's Help ▸ Keyboard Shortcuts sheet reads this table directly
+ * for exactly that reason.
+ *
+ * The names on the left are Concord's normalized keystroke strings, produced
+ * by `getKeystroke` below: 'meta-' covers both Command and Control, and the
+ * special keys ('uparrow', 'backspace', ...) come from `checkSpecials`. Note
+ * that keyboard.ts also handles a few keystrokes that are deliberately absent
+ * here — 'meta-return' and 'meta-backspace' fall through to its switch under
+ * their raw names, and Shift-Tab is a branch inside the 'tab' case — so this
+ * table is the set of *mapped* keystrokes, not quite the set of handled ones.
+ */
+export const CONCORD_KEYSTROKES: Record<string, string> = {
   backspace: 'backspace',
   tab: 'tab',
   return: 'return',

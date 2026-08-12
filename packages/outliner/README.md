@@ -311,6 +311,28 @@ Three properties worth relying on:
 > suspended, so with two suspenders whichever released first released the other's
 > suspension too. See `docs/adr/0002`.
 
+### Which keystrokes the outliner claims
+
+`CONCORD_KEYSTROKES` is exported: a map from Concord's normalized keystroke name
+(`'meta-U'`, `'uparrow'`, `'meta-\\'`, ... — `'meta-'` covers Command *and*
+Control) to the command `handleKeydown` dispatches on.
+
+It's exported because an embedding app otherwise has no way to ask what's
+already taken, and both consequences are silent. Bind one of these keys in a
+native menu and on macOS the accelerator gets first crack at the key equivalent,
+so the outliner's handler never sees the keystroke at all — fine if the menu
+item calls the same method, a bug if it doesn't. Document these keys to your
+users by hand and the list drifts the first time a binding here changes. The
+desktop app's Help ▸ Keyboard Shortcuts sheet reads the table directly rather
+than transcribing it, for that second reason.
+
+Two caveats. It's the set of *mapped* keystrokes, not quite the set of handled
+ones: `'meta-return'` and `'meta-backspace'` reach `keyboard.ts`'s switch under
+their raw names, and Shift-Tab is a branch inside the `'tab'` case, so none of
+the three appears here. And a mapped keystroke isn't a promise that something
+happens — `'meta-F'` maps to `find`, whose case is a deliberate no-op that never
+calls `preventDefault()`, leaving Cmd-F free for a host to use.
+
 ### Finding
 
 `find(text, options?)` searches headline **text** (not markup — `<b>`/`<i>`/links
