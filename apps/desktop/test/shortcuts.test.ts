@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { showShortcuts } from '../src/shortcuts'
+import { CONCORD_KEYSTROKES } from '@andrewshell/outliner'
+import { showShortcuts, DOCUMENTED_COMMANDS, UNDOCUMENTED_COMMANDS } from '../src/shortcuts'
 
 // Characterisation tests for the Help > Keyboard Shortcuts sheet.
 //
@@ -112,7 +113,7 @@ describe('the keyboard shortcuts sheet', () => {
       'Editing',
       'Reorganizing',
       'Formatting',
-      'GeekityFlow',
+      'Expanding',
       'Clipboard',
       'File',
     ])
@@ -184,16 +185,45 @@ describe('the keyboard shortcuts sheet', () => {
     ])
   })
 
-  it('lists expand/collapse under the app\'s own group', async () => {
+  it('lists expand/collapse under Expanding, with the library keystrokes', async () => {
     const content = await renderShortcutsSheet()
 
-    // Filed under "GeekityFlow" as though it were the app's own, though
-    // toggle-expand is a library keystroke like everything in the groups
-    // above it (CONCORD_KEYSTROKES, 'meta-,'). Pinned as-is; see the note at
-    // the top of this file.
-    expect(rowsOfGroup(content, 'GeekityFlow')).toEqual([
+    // CHANGED, deliberately: this row used to be filed under "GeekityFlow",
+    // as though ⌘, were something the app bound. It isn't — 'meta-,' maps to
+    // toggle-expand in CONCORD_KEYSTROKES, exactly like every row in the four
+    // groups above it, and the app's own Expand/Collapse menu items have no
+    // accelerator at all (precisely so they don't shadow this one). Filing it
+    // under the app told the reader the opposite of the truth.
+    expect(rowsOfGroup(content, 'Expanding')).toEqual([
       ['⌘,', "Expand or collapse the headline's children"],
     ])
+  })
+
+  it('accounts for every command the library binds a key to', () => {
+    // The drift guard the transcribed sheet could never have. It asks the
+    // library what it binds and checks the sheet has an answer for each
+    // entry, so a keystroke added or rebound upstream surfaces here instead
+    // of going quietly undocumented -- which is how ⌘F came to be missing.
+    //
+    // This one reads the module's own tables rather than the rendered DOM,
+    // deliberately: the independent source it checks against is
+    // CONCORD_KEYSTROKES, imported from the library, and there is no way to
+    // ask the DOM which library command a rendered row came from.
+    const accounted = new Set([...DOCUMENTED_COMMANDS, ...UNDOCUMENTED_COMMANDS])
+    const unaccounted = [...new Set(Object.values(CONCORD_KEYSTROKES))].filter(
+      (command) => !accounted.has(command),
+    )
+
+    expect(unaccounted).toEqual([])
+  })
+
+  it('skips exactly one library command, and says which', () => {
+    // 'find' is bound (meta-F) but keyboard.ts's `case 'find': break` is a
+    // no-op that never calls preventDefault, so the library documents nothing
+    // by claiming it. The app implements Find itself, and the sheet lists ⌘F
+    // from the menu manifest instead. Pinned so that adding a second skip is
+    // a deliberate act with a reason, not a way to silence the test above.
+    expect([...UNDOCUMENTED_COMMANDS]).toEqual(['find'])
   })
 
   it('lists cut/copy/paste under Clipboard', async () => {
