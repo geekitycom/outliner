@@ -200,8 +200,8 @@ export async function confirmClose(): Promise<boolean> {
 
 /**
  * Runs the same unsaved-changes prompt as confirmClose(), for a window
- * Rust's Quit flow (advance_flow/advance_quit_step in src-tauri/src/lib.rs)
- * has singled out as dirty in response to Cmd-Q. Not just confirmClose()
+ * Rust's Quit flow (the state machine in src-tauri/src/flow.rs, run by
+ * run_flow in lib.rs) has singled out as dirty in response to Cmd-Q. Not just confirmClose()
  * reused as-is, because the two callers need different things done with a
  * "discard" choice:
  *

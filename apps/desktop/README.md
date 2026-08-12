@@ -115,9 +115,12 @@ start a fresh group.
   Once every dirty tab is resolved, the app exits. See "Design notes" below for why this needed a
   custom menu item and a Rust-side dirty-state map, not just an `ExitRequested` handler.
 
-Quit and Close Window are both driven by the same generalized machinery in `src-tauri/src/lib.rs`
-— `PendingFlow`/`Flow`, `advance_flow`, and the shared `flow_response` command — rather than two
-near-identical walk-and-prompt implementations. They differ only in *which* tabs they visit (every
+Quit and Close Window are both driven by the same state machine in `src-tauri/src/flow.rs` —
+`Flow`, `Input`, `Step`, and the one `advance` function over them — rather than two near-identical
+walk-and-prompt implementations. `src-tauri/src/lib.rs` holds only the adapter (`run_flow`, the
+`PendingFlow` slot it writes, and the shared `flow_response` command): it reads the world, asks
+`advance` what to do, and carries out the steps it gets back. No Quit or Close Window decision is
+made there. They differ only in *which* tabs they visit (every
 dirty tab app-wide for Quit, versus the specific tab-group snapshot `close_window_group` captures
 for Close Window) and in what happens once a tab resolves (Quit leaves it open; Close Window
 destroys it). See "Design notes" below for the invariants this sharing has to preserve.
@@ -396,19 +399,28 @@ Without this cleanup, closing a dirty window through Close Window or the traffic
 which already resolve or discard the prompt before destroying it, but don't clear the *Rust-side*
 map entry themselves) would leave a stale `true` behind forever — and the next Quit would try to
 focus and prompt a window that no longer exists, hanging with no visible window to show the
-prompt in and no way to ever quit. `advance_quit` in `lib.rs` also defends against this same
-staleness independently (a window can vanish between reading the map and looking it up), but the
-`Destroyed` cleanup is what keeps the map from accumulating stale entries in the first place.
+prompt in and no way to ever quit. `flow::Windows` (`src-tauri/src/flow.rs`) also defends against
+this same staleness — a window can vanish between reading the map and acting on it — but it does
+so as a *backstop for the gap before `Destroyed` arrives*, not as a substitute for the cleanup:
+without the cleanup the map grows an entry per window ever opened. That defence used to be written
+out three separate times, in Quit's walk, in Close Window's walk and in the `ExitRequested` veto,
+each with its own recovery; it is now one intersection taken at `Windows::new`, which every one of
+those three consults. A label that isn't live can't come back dirty from it, so no caller gets the
+chance to forget the rule, and the machine asks the adapter to `Forget` the entry as it passes.
 
-One more wrinkle worth knowing about if you're reading `advance_quit`/`quit_response`: the quit
-flow's own `app.exit(0)` at the end triggers `RunEvent::ExitRequested` right back into the
-handler design note 7 describes. If the dirty map still said "dirty" at that moment, the app
-would refuse to quit against its own exit call. The fix isn't a bypass flag — it's making the
-state honest: when the user picks Don't Save during a quit prompt, `confirmQuit()` in
-`document.ts` actually calls `outliner.clearChanged()` (which `confirmClose()`'s "discard" branch
-doesn't need to, since closing the window drops its map entry anyway via the `Destroyed` cleanup
-above). By the time `advance_quit` calls `app.exit(0)`, the map is genuinely empty, so
-`ExitRequested`'s dirty check passes it through cleanly.
+One more wrinkle worth knowing about if you're reading `flow.rs`: the quit flow's own
+`app.exit(0)` at the end triggers `RunEvent::ExitRequested` right back into the handler design
+note 7 describes. If the dirty map still said "dirty" at that moment, the app would refuse to quit
+against its own exit call. The fix isn't a bypass flag — it's making the state honest: when the
+user picks Don't Save during a quit prompt, `confirmQuit()` in `document.ts` actually calls
+`outliner.clearChanged()` (which `confirmClose()`'s "discard" branch doesn't need to, since
+closing the window drops its map entry anyway via the `Destroyed` cleanup above). The machine only
+ever emits `Step::Exit` when a fresh `Windows` says nothing live is dirty, so by the time the
+adapter calls `app.exit(0)` the map is genuinely empty and `ExitRequested`'s dirty check passes it
+through cleanly. Both halves of that are pinned by tests in `flow.rs`
+(`quit_only_exits_once_the_dirty_state_is_honestly_clean`), which is the main thing the split
+bought: the deadlock is now something a test can disagree with rather than something a comment
+asserts.
 
 **9. The Reorg menu binds accelerators that shadow the outliner's own keydown handler — on
 purpose, and this is consistent with design note 3, not a contradiction of it.** `Cmd-U`,

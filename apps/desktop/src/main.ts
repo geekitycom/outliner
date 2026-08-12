@@ -68,7 +68,7 @@ async function closeTab(): Promise<void> {
 }
 
 // Shared by Quit's per-window prompt and Close Window's per-tab prompt —
-// both are Rust-driven flows (advance_flow in src-tauri/src/lib.rs) that
+// both are Rust-driven flows (src-tauri/src/flow.rs, run by lib.rs) that
 // emit an event to one window at a time and wait for flow_response before
 // moving on to the next window (or finishing) — see the README's "Quit"
 // design note for the full shape, which Close Window's tab-group walk
@@ -139,7 +139,7 @@ registerMenuListeners((event, handler) => void appWindow.listen(event, handler),
 // doesn't resolve a single focused window for before emitting (see
 // build_menu's "quit"/"close-window" doc comments) — each is targeted at
 // specific windows one at a time instead, walking through a dirty-window
-// flow (advance_flow in src-tauri/src/lib.rs) that may or may not include
+// flow (src-tauri/src/flow.rs, run by lib.rs) that may or may not include
 // this window on any given step.
 void appWindow.listen('menu-quit', () => void handleFlowPrompt(confirmQuit))
 void appWindow.listen('menu-close-window-group', () => void handleFlowPrompt(confirmClose))
