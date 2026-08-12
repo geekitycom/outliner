@@ -57,46 +57,28 @@ impl WindowCounter {
 /// window's JS (`isDirty()` in document.ts); this is Rust's own copy of
 /// it, pushed from the frontend via `set_dirty` below rather than pulled,
 /// since Rust has no way to reach into a webview's JS state on demand.
-/// Both flows driven by `advance_flow` below (Quit, and Close Window's tab-
-/// group walk) need this to know *before* prompting anything whether
-/// there's anything to prompt about.
+/// Both flows in flow.rs (Quit, and Close Window's tab-group walk) need this
+/// to know *before* prompting anything whether there's anything to prompt
+/// about; `windows_snapshot` below is what hands it to them.
 ///
 /// A window's entry MUST be removed when it's destroyed (see the
 /// `on_window_event` handler in `run()`) — a stale `true` left behind for a
 /// window that no longer exists would block a flow forever with no window
 /// left to show a prompt in, and a destroyed webview can't clean up after
-/// itself.
+/// itself. `flow::Windows` survives such an entry (it ignores any label that
+/// isn't live, and asks for it to be forgotten), but that is a backstop for
+/// the gap before `Destroyed` arrives, not a reason to skip the cleanup:
+/// without it the map grows an entry per window ever opened.
 struct DirtyWindows(Mutex<HashMap<String, bool>>);
 
 /// Which multi-window flow, if any, is currently walking windows one at a
-/// time asking about unsaved changes — and the guard against starting a
-/// second one on top of it. `Flow::Quit` (Cmd-Q) visits every dirty window
-/// app-wide and exits once none remain unresolved (`advance_quit_step`
-/// below). `Flow::CloseGroup` (Cmd-Shift-W) visits only the tab labels
-/// captured once, up front, from AppKit's `tabbedWindows` when the flow
-/// started (`close_window_group`/`tab_group_labels` below), destroying
-/// each tab as it resolves instead of exiting the app
-/// (`advance_close_group_step`).
-///
-/// Generalized from a single boolean (this crate's original Quit-only
-/// design) rather than giving Close Window a second, near-identical set of
-/// state and functions: the two flows share the same re-entrancy trap —
-/// Cmd-Q or Cmd-Shift-W pressed a second time, whether the OS just
-/// re-delivers the keystroke or the user genuinely presses it again while
-/// a prompt from the first press is still open, must not start a second
-/// walk on top of the first one — and the same rule that only a window
-/// which still exists may veto (see `advance_quit_step`'s and
-/// `advance_close_group_step`'s handling of a label whose window is
-/// already gone). Reset to `None` whenever a flow ends, either by
-/// finishing or being cancelled (`flow_response`'s `proceed: false` path),
-/// so an aborted flow never leaves the app unable to start a new one —
-/// Quit *or* Close Window.
-struct PendingFlow(Mutex<Option<Flow>>);
-
-enum Flow {
-  Quit,
-  CloseGroup(Vec<String>),
-}
+/// time asking about unsaved changes. Nothing but storage: what the states
+/// mean, when one may start, and when it ends all live in `flow.rs`, which
+/// owns the `Flow` type this holds. Every write to this slot is an
+/// `Outcome::pending` handed back by `flow::advance` and assigned verbatim
+/// by `run_flow` below — this file never decides what should be in here,
+/// including on the paths where the answer is "the same thing as before".
+struct PendingFlow(Mutex<Option<flow::Flow>>);
 
 /// A raw AppKit object pointer, made `Send` so it can travel into the
 /// `run_on_main_thread` closures in `group_as_tab`/`tab_group_labels`
@@ -147,184 +129,111 @@ fn set_dirty(app: tauri::AppHandle, label: String, dirty: bool) {
   app.state::<DirtyWindows>().0.lock().unwrap().insert(label, dirty);
 }
 
-/// Reports the outcome of the unsaved-changes prompt a flow step below
-/// (`advance_quit_step`'s `menu-quit`, or `advance_close_group_step`'s
-/// `menu-close-window-group`) triggered in `label`'s window, and drives the
-/// rest of whichever flow is running forward. Shared by Quit and Close
-/// Window rather than each having its own near-identical command — see
-/// `PendingFlow`'s doc comment for why generalizing this one is what keeps
-/// the two flows' invariants (re-entrancy, "only a window that still exists
-/// may veto") from drifting apart as a second copy would risk.
+/// Reports the outcome of the unsaved-changes prompt that a `Step::Prompt`
+/// triggered in `label`'s window, and drives whichever flow is running
+/// forward. Shared by Quit and Close Window rather than each having its own
+/// near-identical command: the two differ only in what the machine decides
+/// to do next, and that decision is in flow.rs.
 ///
-/// `proceed: false` is Cancel — abort the whole flow, whichever one it is.
-/// Nothing else is prompted and no window closes; just clear `PendingFlow`
-/// so a later Cmd-Q or Cmd-Shift-W can start over.
-///
-/// `proceed: true` covers both Save (already written to disk, with the
-/// document's changed state already cleared) and Don't Save (changed state
-/// *also* already cleared on the frontend for Quit — see `confirmQuit` in
-/// document.ts for why that matters there; Close Window uses `confirmClose`
-/// instead, which doesn't need to, since the window is destroyed right
-/// below instead of staying open). Either way this window's own part is
-/// done, so its dirty entry is marked clean right here rather than waiting
-/// on `set_dirty`'s own separate `invoke()` call to arrive first: that call
-/// and this one are sent in order from the same webview, but nothing
-/// guarantees Rust *processes* two independent IPC calls in send order, and
-/// racing that would make the flow's progress non-deterministic.
-///
-/// Close Window additionally destroys `label`'s window once it's resolved
-/// here — unlike Quit, which leaves every window open until the very end
-/// (the process exit itself is what closes them) — since Close Window's
-/// whole point is to actually close each tab, not just clear its dirty
-/// flag.
+/// `proceed: false` is Cancel. `proceed: true` covers both Save (already
+/// written to disk, with the document's changed state already cleared) and
+/// Don't Save — which for Quit *also* clears the frontend's changed state
+/// (see `confirmQuit` in document.ts), the honest-state property the
+/// eventual `Step::Exit` depends on.
 #[tauri::command]
 fn flow_response(app: tauri::AppHandle, label: String, proceed: bool) {
-  if !proceed {
-    *app.state::<PendingFlow>().0.lock().unwrap() = None;
-    return;
-  }
-
-  app
-    .state::<DirtyWindows>()
-    .0
-    .lock()
-    .unwrap()
-    .insert(label.clone(), false);
-
-  let is_close_group = matches!(
-    app.state::<PendingFlow>().0.lock().unwrap().as_ref(),
-    Some(Flow::CloseGroup(_))
-  );
-  if is_close_group {
-    if let Some(window) = app.get_webview_window(&label) {
-      let _ = window.destroy();
-    }
-  }
-
-  advance_flow(&app);
-}
-
-/// Drives whichever flow is in `PendingFlow` one step further. Used both to
-/// start a flow (the "quit"/"close-window" menu event branches in
-/// `on_menu_event` below) and to continue it (`flow_response`, once a
-/// window resolves) — there's no real difference between "start" and
-/// "continue" here, matching the original single-flow `advance_quit`'s own
-/// reasoning for this shape.
-fn advance_flow(app: &tauri::AppHandle) {
-  let is_quit = {
-    let flow = app.state::<PendingFlow>();
-    let guard = flow.0.lock().unwrap();
-    match guard.as_ref() {
-      None => return, // nothing in progress — defensive, shouldn't happen
-      Some(Flow::Quit) => true,
-      Some(Flow::CloseGroup(_)) => false,
-    }
-  };
-  if is_quit {
-    advance_quit_step(app);
-  } else {
-    advance_close_group_step(app);
-  }
-}
-
-/// Quit's own step of `advance_flow` — finds the next dirty window
-/// app-wide (not scoped to any particular tab group, since Quit must
-/// account for every open document, in every group), focuses it, and asks
-/// its frontend to run the unsaved-changes prompt.
-fn advance_quit_step(app: &tauri::AppHandle) {
-  let next_dirty = {
-    let dirty_windows = app.state::<DirtyWindows>();
-    let dirty = dirty_windows.0.lock().unwrap();
-    dirty.iter().find(|(_, &d)| d).map(|(label, _)| label.clone())
-  };
-
-  let Some(label) = next_dirty else {
-    // Nothing left to ask about — the dirty map is genuinely empty, so
-    // ExitRequested's own check (in run()'s event handler below) will see
-    // that and let this exit through instead of bouncing it back here.
-    *app.state::<PendingFlow>().0.lock().unwrap() = None;
-    app.exit(0);
-    return;
-  };
-
-  let Some(window) = app.get_webview_window(&label) else {
-    // The map is stale — the window closed through some other route
-    // (Close Tab, Close Window, the traffic light) without
-    // on_window_event's cleanup having run yet, or in the gap between the
-    // lock above and here. Drop the entry and move on rather than getting
-    // stuck asking about a window that no longer exists.
-    app.state::<DirtyWindows>().0.lock().unwrap().remove(&label);
-    advance_quit_step(app);
-    return;
-  };
-
-  // WebviewWindow::set_focus() is a plain Rust method (see window/mod.rs in
-  // the tauri crate — no #[tauri::command] attribute), called directly here
-  // rather than invoked from JS, so it needs no core:window:allow-set-focus
-  // entry in capabilities/default.json: the ACL only gates frontend-to-
-  // backend invoke() calls, the same reasoning the README's design notes
-  // already give for focused_window()/emit_to() needing no capability
-  // grant either. A window that can't be focused still gets the prompt —
-  // emit_to below doesn't depend on set_focus succeeding. Ignoring the
-  // error here, rather than aborting the whole quit, is what keeps an
-  // unfocusable window from hanging the flow forever with no way to quit
-  // at all.
-  let _ = window.set_focus();
-  let _ = app.emit_to(&label, "menu-quit", ());
-}
-
-/// Close Window's own step of `advance_flow`: walks `Flow::CloseGroup`'s
-/// `remaining` labels in order — the tab group as it stood the moment
-/// Cmd-Shift-W was pressed, see `close_window_group`/`tab_group_labels` for
-/// why that list isn't re-queried mid-walk. A clean tab is destroyed
-/// immediately with no prompt; the first dirty one found stops the loop and
-/// asks its frontend to run the same unsaved-changes prompt Close Tab uses
-/// (`flow_response` destroys it once that resolves, then calls back into
-/// `advance_flow` to continue from where this left off).
-fn advance_close_group_step(app: &tauri::AppHandle) {
-  loop {
-    let next = {
-      let flow = app.state::<PendingFlow>();
-      let mut guard = flow.0.lock().unwrap();
-      let Some(Flow::CloseGroup(remaining)) = guard.as_mut() else {
-        return; // flow was cancelled or finished out from under this call
-      };
-      if remaining.is_empty() {
-        None
+  run_flow(
+    &app,
+    flow::Input::Resolved {
+      label,
+      response: if proceed {
+        flow::Response::Proceed
       } else {
-        Some(remaining.remove(0))
+        flow::Response::Cancel
+      },
+    },
+  );
+}
+
+/// The world as `flow::advance` needs to see it: this app's own dirty map,
+/// intersected with the windows that actually exist right now.
+///
+/// Both halves are read here, in one place, at one moment — the labels come
+/// from `webview_windows()` rather than being looked up one at a time as the
+/// machine goes, so there is no window for a window to vanish *between* two
+/// of the machine's own decisions. See `flow::Windows` for why that
+/// intersection is the whole of this flow's staleness handling.
+fn windows_snapshot(app: &tauri::AppHandle) -> flow::Windows {
+  let dirty = app.state::<DirtyWindows>().0.lock().unwrap().clone();
+  let live: Vec<String> = app.webview_windows().into_keys().collect();
+  flow::Windows::new(&dirty, &live)
+}
+
+/// The adapter: hand an input to the state machine, store the flow state it
+/// hands back, carry out the steps it asks for. Every Quit and Close Window
+/// decision this app makes goes through this one function, and none of them
+/// is made *in* it — there is no policy below this line, only effects.
+///
+/// The lock on `PendingFlow` is taken for the assignment and released before
+/// any step runs. A step re-entering this function while that lock was held
+/// would deadlock the app on its own quit — and `Step::Exit` does exactly
+/// that kind of re-entering, via `RunEvent::ExitRequested`.
+fn run_flow(app: &tauri::AppHandle, input: flow::Input) {
+  let outcome = {
+    let pending = app.state::<PendingFlow>();
+    let mut guard = pending.0.lock().unwrap();
+    let outcome = flow::advance(guard.as_ref(), input, &windows_snapshot(app));
+    *guard = outcome.pending;
+    outcome.steps
+  };
+
+  for step in outcome {
+    match step {
+      flow::Step::Forget { label } => {
+        app.state::<DirtyWindows>().0.lock().unwrap().remove(&label);
       }
-    };
-
-    let Some(label) = next else {
-      // Every tab in the group is closed — nothing left to prompt.
-      *app.state::<PendingFlow>().0.lock().unwrap() = None;
-      return;
-    };
-
-    let Some(window) = app.get_webview_window(&label) else {
-      // Already closed through some other route (its own Close Tab, the
-      // traffic light, ...) between when the group was captured and now.
-      continue;
-    };
-
-    let is_dirty = app
-      .state::<DirtyWindows>()
-      .0
-      .lock()
-      .unwrap()
-      .get(&label)
-      .copied()
-      .unwrap_or(false);
-
-    if !is_dirty {
-      let _ = window.destroy();
-      continue;
+      flow::Step::MarkClean { label } => {
+        app.state::<DirtyWindows>().0.lock().unwrap().insert(label, false);
+      }
+      flow::Step::Prompt { label, event } => {
+        // set_focus() is a plain Rust method (see window/mod.rs in the tauri
+        // crate — no #[tauri::command] attribute), called directly here
+        // rather than invoked from JS, so it needs no
+        // core:window:allow-set-focus entry in capabilities/default.json:
+        // the ACL only gates frontend-to-backend invoke() calls, the same
+        // reasoning the README's design notes give for focused_window() and
+        // emit_to() needing no grant either.
+        //
+        // Both errors are ignored on purpose. A window that can't be focused
+        // still gets its prompt, and aborting the flow on either would leave
+        // an unfocusable window hanging the whole thing with no way to quit
+        // at all.
+        //
+        // emit_to the one label, NEVER a broadcast emit: that would run the
+        // unsaved-changes prompt in every open window at once instead of the
+        // one whose turn it is.
+        if let Some(window) = app.get_webview_window(&label) {
+          let _ = window.set_focus();
+        }
+        let _ = app.emit_to(&label, event, ());
+      }
+      flow::Step::Destroy { label } => {
+        // Gone already is a fine outcome for "close this window" — the
+        // machine was told what existed when it decided, and a window that
+        // slipped away since needs nothing done to it.
+        if let Some(window) = app.get_webview_window(&label) {
+          let _ = window.destroy();
+        }
+      }
+      flow::Step::Exit => {
+        // This re-triggers RunEvent::ExitRequested, which re-checks the
+        // dirty state through `windows_snapshot` above — see the handler in
+        // run(). It passes because the machine only emits this step when
+        // that same check already came back clean, not because anything
+        // waved it through.
+        app.exit(0);
+      }
     }
-
-    let _ = window.set_focus();
-    let _ = app.emit_to(&label, "menu-close-window-group", ());
-    return;
   }
 }
 
@@ -694,24 +603,27 @@ fn tab_group_labels(_app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> V
 
 /// Starts the Close Window flow (Cmd-Shift-W): closes every tab in
 /// `window`'s tab group, prompting one at a time for whichever are dirty.
-/// Reuses `advance_flow`/`flow_response` (see `PendingFlow`'s doc comment)
-/// instead of a second copy of Quit's walk-and-prompt logic — the
-/// invariants (re-entrancy, "only a window that still exists may veto")
-/// are the same either way.
+///
+/// All this does is turn a keypress into the one fact the machine cannot
+/// work out for itself — which tabs are in this window's group, asked of
+/// AppKit right now, never read from a map this crate keeps (design note 10
+/// in README.md: the user can drag a tab between groups with no event this
+/// app can observe, so any tracked copy would go stale). What happens to
+/// that list afterwards is entirely `flow::advance`'s business, including
+/// whether this press starts a walk at all.
+///
+/// The group is therefore queried even on a press that turns out to be
+/// ignored, because a flow was already running. That costs one
+/// `run_on_main_thread` round trip on a repeated keypress, and it buys
+/// having exactly one re-entrancy guard in the codebase instead of a second
+/// copy here that exists only to save the query.
 fn close_window_group(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
-  let flow = app.state::<PendingFlow>();
-  {
-    let mut guard = flow.0.lock().unwrap();
-    if guard.is_some() {
-      // A flow (this one or Quit) is already in progress — let it finish
-      // instead of stacking a second walk on top of it. Same guard Quit's
-      // own on_menu_event branch already needed for Cmd-Q pressed twice.
-      return;
-    }
-    let labels = tab_group_labels(app, window);
-    *guard = Some(Flow::CloseGroup(labels));
-  }
-  advance_flow(app);
+  run_flow(
+    app,
+    flow::Input::StartCloseGroup {
+      group: tab_group_labels(app, window),
+    },
+  );
 }
 
 /// The shared menu manifest, embedded at compile time.
@@ -868,7 +780,7 @@ fn add_manifest_items<'m>(
 /// specifically — Quit and Close Window are the two exceptions that don't
 /// stop at resolving a single focused window, since each may need to work
 /// through *several* windows in turn; see their own doc comments below,
-/// `advance_flow`, and `close_window_group`.
+/// `run_flow`, `close_window_group`, and the state machine in flow.rs.
 fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
   // Every custom item below comes from menu.json (see MENU_MANIFEST_JSON
   // above): its id, label, accelerator, order within its submenu, and which
@@ -1134,25 +1046,16 @@ pub fn run() {
 
         // Quit doesn't act on "the document the user is looking at" either
         // — it may need to work through *several* dirty windows in turn,
-        // not just the focused one, so it's handled by advance_flow
-        // instead of falling into the focused-window branch below. See the
-        // "quit" MenuItemBuilder's doc comment in build_menu for why this
-        // is a custom item at all, and PendingFlow's doc comment for how
-        // this and Close Window above share the same walk-and-prompt
-        // machinery.
+        // not just the focused one, so it goes to the flow machine instead
+        // of falling into the focused-window branch below. See the "quit"
+        // MenuItemBuilder's doc comment in build_menu for why this is a
+        // custom item at all (short version: the predefined Quit sends
+        // Cocoa's terminate: and no Rust hook ever runs, discarding unsaved
+        // work in every window), and flow.rs for everything that happens
+        // next — including the guard against a second Cmd-Q stacking a
+        // second walk on top of this one.
         if id == "quit" {
-          let flow = app.state::<PendingFlow>();
-          let mut guard = flow.0.lock().unwrap();
-          if guard.is_some() {
-            // A flow (this or Close Window) is already in progress — e.g.
-            // Cmd-Q pressed twice in a row, or again while a dirty-window
-            // prompt from the first press is still open. Let that flow
-            // finish instead of stacking a second one on top of it.
-            return;
-          }
-          *guard = Some(Flow::Quit);
-          drop(guard);
-          advance_flow(app);
+          run_flow(app, flow::Input::StartQuit);
           return;
         }
 
@@ -1237,36 +1140,36 @@ pub fn run() {
       // itself never reaches the OS anymore (it's the custom item above).
       // By the time that fires, whichever route closed the window —
       // `onCloseRequested` in main.ts (Close Tab / the traffic light) or
-      // `flow_response`'s own `destroy()` call above (Close Window's
-      // group walk) — has already prompted if needed, and this crate's
+      // run_flow's own `Step::Destroy` (Close Window's group walk) — has
+      // already prompted if needed, and this crate's
       // on_window_event Destroyed handler above has already dropped that
       // window's entry — so checking the dirty map here is correct for
       // Cmd-Q, Close Window, *and* the plain last-window-close case alike.
       //
       // `code: Some(_)` is a *programmatic* exit — the only one this crate
-      // ever triggers is advance_quit_step's `app.exit(0)`, which only runs
-      // once the dirty map is confirmed empty. Skipping the dirty check
-      // entirely for Some(_) is what keeps that call from deadlocking
+      // ever triggers is `Step::Exit`'s `app.exit(0)` in run_flow, which the
+      // machine only reaches once no live window is dirty. Skipping the
+      // check entirely for Some(_) is what keeps that call from deadlocking
       // against this very handler: prevent_exit() firing on our own
-      // already-verified exit would leave the app unquittable.
+      // already-verified exit would leave the app unquittable. Note this is
+      // belt and braces rather than the load-bearing part — the state the
+      // check would read is genuinely clean by then (flow.rs's `Step::Exit`
+      // explains why that honesty is the property to preserve, and why a
+      // bypass flag would not be).
       if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
         if code.is_none() {
-          // Only a dirty window that STILL EXISTS may veto the exit. The
-          // map alone isn't safe to trust here: this fires on the
+          // Only a dirty window that STILL EXISTS may veto the exit — the
+          // same rule, from the same accessor, that the flow's own walk
+          // uses. The map alone isn't safe to trust here: this fires on the
           // last-window-closed path, and it would be a bet on Destroyed
           // being delivered before ExitRequested that the entry for the
           // window that just closed is already gone. Lose that bet and
           // prevent_exit() fires with no windows left to prompt in — an
           // invisible process the user can only end from Activity Monitor,
           // which is a worse failure than the data loss this whole flow
-          // exists to prevent. Cross-checking against the live window list
-          // makes the outcome independent of that ordering.
-          let dirty_windows = app.state::<DirtyWindows>();
-          let dirty = dirty_windows.0.lock().unwrap();
-          let any_live_dirty = dirty
-            .iter()
-            .any(|(label, &d)| d && app.get_webview_window(label).is_some());
-          if any_live_dirty {
+          // exists to prevent. `flow::Windows` takes that intersection once,
+          // for this check and both walks alike.
+          if windows_snapshot(app).any_dirty() {
             api.prevent_exit();
           }
         }
