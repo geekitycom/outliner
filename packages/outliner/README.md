@@ -45,12 +45,26 @@ Two tiers:
   browser-independent logic where the risk lives — OPML round-trip, the structural
   operations (insert / reorg / promote / demote / expand-collapse / delete), `undo`,
   the `insertText` multi-line parser, attributes (including that `data-opml` survives
-  `cloneNode`), and `getKeystroke` command mapping.
+  `cloneNode`), `getKeystroke` command mapping, and — since caret ownership became
+  push-based — **caret ownership and the whole keydown command switch**.
 - **E2E — Playwright + Chromium** (`e2e/`, `pnpm test:e2e`): the browser-only
   behaviors jsdom can't — real editing (type / Return / Tab), `execCommand`
-  formatting, readonly, and the **Concord compat drop-in** (jQuery `$().concord()`
-  plugin + `op*` globals, via a self-contained fixture). Requires
-  `pnpm exec playwright install chromium` once.
+  formatting, readonly, real pointer input, and the **Concord compat drop-in**
+  (jQuery `$().concord()` plugin + `op*` globals, via a self-contained fixture).
+  Requires `pnpm exec playwright install chromium` once.
+
+Two title-row tests exist in **both** tiers on purpose. They turn on focus being
+lost with no `blur` ever firing, which jsdom can only *stage* (by suppressing the
+event) where Chromium genuinely never fires it. Keeping both means a divergence
+between the two shows up as a failing test rather than as a bug.
+
+The dividing line moved once already, and it's worth knowing why. Focus behavior
+used to be untestable below the browser: the old code decided which outline was
+active by scanning for visible roots via `offsetParent`, and jsdom always reports
+that as `null`. Keystroke dispatch therefore did *nothing at all* under Vitest, and
+every focus bug had to be caught in Playwright. Deriving ownership from real
+`focusin`/`focusout` events instead — which jsdom does implement — moved that whole
+surface down a tier. See `docs/adr/0001`.
 
 CI (`.github/workflows/ci.yml`) runs both (lint, typecheck, unit tests, build in one
 job; the Playwright suite in another). The `pre-push` hook runs the fast unit suite;
@@ -258,6 +272,45 @@ land on it, and it's never part of `toOpml()` output (enabling or disabling
 it doesn't change a single byte of the serialized document). Toggle it any
 time after construction with `outliner.prefs({ titleRow: true })`.
 
+### Suspending the outliner (caret ownership)
+
+The outliner listens for keystrokes at the document, so anything else on the page
+that wants typed input — a dialog, a search box, your own toolbar field — has to be
+able to say "the caret is mine for now". That's `claim()`:
+
+```ts
+import { claim } from '@andrewshell/outliner'
+
+const release = claim({ kind: 'field', el: dialog })
+dialog.addEventListener('close', () => release(), { once: true })
+```
+
+While a claim is in force the outline won't act on keystrokes and won't take the
+caret back — including from a programmatic `go()`, `find()` or `setCursor()`
+elsewhere in your app. Releasing hands the caret back to whoever held it before and
+puts them back the way they like it (for an outline: its cursor headline in text
+mode, its paste bin otherwise), so you never have to work out what to restore.
+
+Three properties worth relying on:
+
+- **The disposable carries identity.** Two overlapping claims — a dialog opening
+  over a field already being typed in — don't release each other. Releasing out of
+  order is safe, and calling a disposable twice is a no-op.
+- **Ownership is decided structurally**, by where the caret physically is. A focus
+  landing inside an outline (or its paste bin) belongs to that outline; anything
+  else is a field. Nothing is keyed off CSS classes or tag names, so a dialog, an
+  `<input>` and a custom `contenteditable` are all handled the same way without
+  the library knowing anything about them.
+- **There is no accessor for who owns the caret**, deliberately. An app that
+  branches on ownership is one step from moving the caret itself, which is the
+  class of bug this exists to prevent.
+
+> **Upgrading from 0.1.x.** This replaced `stopListening()` / `resumeListening()` /
+> `getFocusRoot()` / `setFocusRoot()`, which are gone. The old pair couldn't be
+> fixed in place: a no-arg `resume` can't know whether its caller is the one that
+> suspended, so with two suspenders whichever released first released the other's
+> suspension too. See `docs/adr/0002`.
+
 ### Finding
 
 `find(text, options?)` searches headline **text** (not markup — `<b>`/`<i>`/links
@@ -355,7 +408,8 @@ verifiable method-for-method; the public `Outliner` facade is the modern surface
 | `keyboard.ts` | the global keydown command switch |
 | `attributes.ts` / `noderef.ts` | per-node OPML attributes; the callback node handle |
 | `script.ts` | comment nodes |
-| `runtime.ts` / `globals.ts` | focus root, event gating, document listeners (the old `concord` singleton) |
+| `caret.ts` | caret ownership — who the text caret belongs to, and the only place that moves it |
+| `runtime.ts` / `globals.ts` | the root-to-instance registry and document listeners (what's left of the old `concord` singleton) |
 | `dom.ts` / `icons.ts` / `util.ts` | jQuery-replacement helpers, SVG icon registry, string/keystroke utils |
 
 ### Notable porting decisions
