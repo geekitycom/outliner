@@ -229,31 +229,35 @@ fn run_flow(app: &tauri::AppHandle, input: flow::Input) {
         // unsaved-changes prompt in every open window at once instead of the
         // one whose turn it is.
         //
-        // The liveness re-check is the one thing in this arm that is not
-        // simply "do as told". The machine decided from a `Windows` snapshot
-        // read at the top of this function, and the user can close a window
-        // at any moment after that — including in the gap between that
-        // decision and this line. Emitting into the gap is silent: `emit_to`
-        // an unknown label is not an error worth reporting, no answer ever
-        // comes back, `PendingFlow` stays `Some`, and the re-entrancy guard
-        // then correctly refuses every later Cmd-Q. The app becomes
-        // unquittable from its own menu with nothing on screen to explain it
-        // — the same failure class design note 8 exists to prevent.
+        // The liveness re-check is the one thing about this step that is not
+        // simply "do as told", and it is deliberately NOT written here. The
+        // machine decided from a `Windows` snapshot read at the top of this
+        // function, and the user can close a window at any moment after that
+        // — including in the gap between that decision and this line. What
+        // that gap means, and what to do about it, is `flow::deliver_prompt`
+        // and `flow::advance`'s business; see the long note on the former for
+        // the stall it prevents.
         //
-        // So: no window, no emit, and report `Vanished` instead. Note the
-        // shape of that — this arm decides nothing about what a dead target
-        // means for the flow. It reports an observation; `flow::advance`
-        // decides that the walk steps over it and carries on. Anything more
-        // opinionated here (say, quietly moving to the next dirty window)
-        // would be policy in the adapter, which is exactly what the flow.rs
-        // seam exists to prevent.
-        match app.get_webview_window(&label) {
-          Some(window) => {
-            let _ = window.set_focus();
-            let _ = app.emit_to(&label, event, ());
-          }
-          None => observed = Some(flow::Input::Vanished { label }),
-        }
+        // This line's entire contribution is the lookup: `get_webview_window`
+        // answers "is there still a window called this", at the last possible
+        // moment, and hands the handle over. Nothing here may emit on its own
+        // — the closure below is reached only for a window that exists,
+        // because the helper is the only thing that calls it — and nothing
+        // here may decide what a missing one means. That split is the point:
+        // it leaves this arm with no judgement in it at all, so there is no
+        // second copy of the judgement to drift from the first. There used to
+        // be one, mirrored by hand into flow.rs's test harness, and the real
+        // one could be deleted with all 22 tests still passing.
+        //
+        // The returned observation is assigned rather than merged because a
+        // `Prompt` is always the last step of an outcome — `drive` returns
+        // the moment it pushes one — so there can never be an earlier
+        // observation to lose.
+        let target = app.get_webview_window(&label);
+        observed = flow::deliver_prompt(label, target, |label, window| {
+          let _ = window.set_focus();
+          let _ = app.emit_to(label, event, ());
+        });
       }
       flow::Step::Destroy { label } => {
         // Gone already is a fine outcome for "close this window" — the

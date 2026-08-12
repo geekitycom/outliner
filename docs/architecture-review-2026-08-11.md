@@ -198,6 +198,18 @@ what was seen; `flow.rs` decides that the walk steps over it and carries on, by
 re-driving through the dead-window handling that already existed. Rust tests 20 → 22,
 one per flow.
 
+**Then de-mirrored.** The first cut of the fix wrote the liveness re-check twice: once
+in `run_flow`'s `Prompt` arm and once, by hand, in `flow.rs`'s `App` test harness, with
+a comment saying it sat "in the same place the real one sits". The tests drove the copy,
+so the real one could be deleted outright with all 22 still passing — verified by doing
+it. The judgement now lives once, in `flow::deliver_prompt(label, target, emit)`, which
+both callers go through. It is generic over the window type so `flow.rs` still names no
+window type of its own, and it takes the emit as a closure so it is the *only* gate on
+the emit — a helper that merely answered "is this label live?" would leave its caller
+free to emit anyway. Breaking that one branch now fails three tests instead of none.
+Rust tests 22 → 24. Same rule as `menu.json` and `Windows::new`: one writer per
+decision.
+
 ---
 
 ## 4. Make the Document a module — **Worth exploring**

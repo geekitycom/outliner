@@ -273,6 +273,64 @@ impl Windows {
   }
 }
 
+/// Carries out a `Step::Prompt`: emit to the window if it is still there,
+/// and if it is not, say so instead. Returns what the caller must feed back
+/// into `advance` before its turn is over — `None` when the prompt was
+/// delivered and there is nothing to report.
+///
+/// `target` is whatever the caller's own window lookup handed back for the
+/// step's label, done at the last possible moment. `Some` is a window that
+/// still exists; `None` is one that has gone since the `Windows` snapshot the
+/// machine decided from was read. That gap is real — the snapshot is taken
+/// once at the top of the adapter's turn and the user can close a window at
+/// any point after it — and this is the only place anything is in a position
+/// to notice, which is why the observation has to come *in* rather than being
+/// derived here.
+///
+/// The two odd things about the signature are the whole point of it. It is
+/// generic over the window type so this module still names no window type of
+/// its own (see the module doc) while being handed a real one, and it takes
+/// the emit as a closure so that **it is the only gate on the emit**. A
+/// helper that merely answered a question — "is this label still live?" —
+/// would leave its caller free to emit anyway, and a caller that did would be
+/// back to the bug below with the helper looking on.
+///
+/// Why it exists at all: this decision used to be written twice, once in
+/// `lib.rs`'s adapter and once, by hand, in this file's `App` test harness.
+/// The tests drove the copy, so the original could be deleted outright and
+/// every test still passed — verified by doing exactly that. This repo has
+/// designed that same failure mode away twice already (`menu.json` exists so
+/// menu ids are not restated in two languages; `Windows::new` intersects
+/// dirty-and-live once so two checks cannot disagree), and a mirrored adapter
+/// is the same problem in a third place.
+pub fn deliver_prompt<W>(
+  label: String,
+  target: Option<W>,
+  emit: impl FnOnce(&str, W),
+) -> Option<Input> {
+  match target {
+    Some(window) => {
+      emit(&label, window);
+      None
+    }
+    // No window, no emit. Emitting into the gap is silent — `emit_to` an
+    // unknown label is not an error anyone reports — so no answer ever comes
+    // back, `PendingFlow` stays `Some`, and the re-entrancy guard in
+    // `advance` then correctly refuses every later Cmd-Q. The app cannot be
+    // quit from its own menu and shows nothing explaining why, which is the
+    // same "unquittable process" failure class as design note 8 in
+    // apps/desktop/README.md.
+    //
+    // Note the shape of what goes back: an observation, not a decision.
+    // `advance` is what decides the walk steps over the dead window and
+    // carries on (see `Input::Vanished` and `vanished`). Anything more
+    // opinionated here — quietly moving to the next dirty window, say —
+    // would be policy in the adapter, which is exactly what this module's
+    // seam exists to prevent.
+    None => Some(Input::Vanished { label }),
+  }
+}
+
 /// The whole flow, as one total function from (state, input, world) to (new
 /// state, effects).
 ///
@@ -574,6 +632,53 @@ mod tests {
     assert_eq!(outcome.pending, Some(Flow::Quit));
   }
 
+  // ---- deliver_prompt: the adapter's one judgement call -------------------
+
+  /// The ordinary case: the window is still there, so the prompt is emitted
+  /// and there is nothing to report back. Asserting that the emit *ran*, and
+  /// ran with the label and the handle it was given, is the half of this that
+  /// stops a fix for the race below from being "never emit anything".
+  #[test]
+  fn a_prompt_whose_target_is_still_there_is_emitted_and_reports_nothing() {
+    let mut emitted: Vec<String> = Vec::new();
+
+    let report = deliver_prompt("win-1".to_string(), Some("a window handle"), |label, target| {
+      emitted.push(format!("{label} -> {target}"));
+    });
+
+    assert_eq!(emitted, vec!["win-1 -> a window handle".to_string()]);
+    assert_eq!(report, None, "a delivered prompt leaves nothing to report");
+  }
+
+  /// The race, at the one line that can see it. A window that has gone since
+  /// the `Windows` snapshot was taken must not be emitted to — `emit_to` an
+  /// unknown label is silent, no answer ever comes back, and `PendingFlow`
+  /// stays `Some` forever — and the observation must go back to `advance`,
+  /// which is where "therefore step over it" is decided.
+  ///
+  /// Both halves matter. Reporting `Vanished` while still emitting would fix
+  /// the stall and leave the pointless emit; suppressing the emit without
+  /// reporting anything would strand the flow just as thoroughly as before.
+  #[test]
+  fn a_prompt_whose_target_has_gone_emits_nothing_and_reports_vanished() {
+    let mut emitted: Vec<String> = Vec::new();
+
+    let report = deliver_prompt("win-1".to_string(), None::<&str>, |label, _| {
+      emitted.push(label.to_string());
+    });
+
+    assert!(
+      emitted.is_empty(),
+      "no window, no emit: the event would go to a label with no webview behind it"
+    );
+    assert_eq!(
+      report,
+      Some(Input::Vanished {
+        label: "win-1".to_string()
+      })
+    );
+  }
+
   // ---- Sequences ---------------------------------------------------------
 
   /// A stand-in for the app: the two pieces of world `advance` reads, plus
@@ -654,22 +759,32 @@ mod tests {
           Step::MarkClean { label } => {
             self.dirty.insert(label.clone(), false);
           }
-          Step::Prompt { label, .. } => {
+          Step::Prompt { label, event } => {
             // The window is destroyed right here, after the snapshot the
             // machine decided from and before this prompt lands.
             if self.vanish_before_prompt.remove(label) {
               self.live.retain(|l| l != label);
             }
-            // The adapter's liveness re-check, in the same place the real one
-            // sits: immediately before the emit, because that is the only
-            // moment anything can know. It reports the observation and emits
-            // nothing; what to do about it is decided back in `advance`.
-            if !self.live.contains(label) {
-              carried_out = false;
-              follow_up = Some(Input::Vanished {
-                label: label.clone(),
-              });
-            }
+            // Through the very function the real adapter calls, not a copy of
+            // it written to match. This harness has no windows, so `Some(())`
+            // stands in for the `WebviewWindow` the adapter would have got
+            // back and the emit does nothing observable — what is being
+            // shared here is the judgement, and the judgement is all of it.
+            //
+            // A hand-written copy sat here until this was extracted, and it
+            // meant the real adapter's arm could be deleted with every test
+            // still green. See `deliver_prompt`.
+            let target = self.live.contains(label).then_some(());
+            follow_up = deliver_prompt(label.clone(), target, |emitted_to, ()| {
+              assert_eq!(emitted_to, label.as_str(), "the prompt goes to the label the step named");
+              assert!(
+                *event == PROMPT_QUIT || *event == PROMPT_CLOSE_GROUP,
+                "a prompt carries one of the two flows' own events, never a broadcast"
+              );
+            });
+            // A prompt that was not delivered never happened, so it does not
+            // go in the log the assertions read.
+            carried_out = follow_up.is_none();
           }
           Step::Destroy { label } => {
             // The real adapter's destroy() also triggers the Destroyed
