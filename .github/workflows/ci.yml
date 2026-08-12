@@ -21,6 +21,58 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
+  # The desktop app's Rust half was not built by CI at all: `pnpm build` runs
+  # Vite and stops there, so a src-tauri/src/lib.rs that did not compile went
+  # green. This job is the compiler finally getting a say.
+  #
+  # It matters more than "the app still builds". The menu is about to read a
+  # shared manifest at compile time (include_str! + serde), which turns a
+  # malformed or missing manifest into a compile error — an excellent way to
+  # catch it, but only if something compiles the crate. Note that `cargo test`
+  # currently passes trivially, since the crate has no #[cfg(test)] tests yet;
+  # the job is here so that the parsing added next is both compiled and run.
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v7
+      # Tauri v2 on Linux draws its webview with WebKitGTK and links against
+      # the rest of these; without them the build fails in pkg-config while
+      # compiling Tauri's own dependencies, long before reaching this crate.
+      # None of it is needed on the macOS machines the app is developed on,
+      # which is exactly why it is easy to leave out and get a red build.
+      - name: Install Tauri's Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The crate is not at the repo root, so the cache action has to be
+          # pointed at it; it keys on that Cargo.lock and caches the registry
+          # alongside target/. Tauri pulls in a lot of dependencies and a cold
+          # build of them dwarfs the time spent on this crate's own code.
+          workspaces: apps/desktop/src-tauri
+      # No frontend build first, deliberately. tauri::generate_context! reads
+      # the bundle named by frontendDist (../dist, which is gitignored and so
+      # absent from a fresh checkout), but it only *embeds* those assets — it
+      # does not require them to exist to expand, so check and test both
+      # compile without them. Building the frontend here would duplicate the
+      # `build` job above for no added coverage.
+      - run: cargo check
+      - run: cargo test
+
   e2e:
     runs-on: ubuntu-latest
     steps:
