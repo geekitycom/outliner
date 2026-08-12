@@ -1,3 +1,4 @@
 {
-  "packages/outliner": "0.1.0"
+  "packages/outliner": "0.1.0",
+  "apps/desktop": "0.1.0"
 }

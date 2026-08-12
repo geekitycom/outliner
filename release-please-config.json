@@ -12,6 +12,25 @@
           "path": "src/constants.ts"
         }
       ]
+    },
+    "apps/desktop": {
+      "release-type": "node",
+      "package-name": "outliner-desktop",
+      "component": "desktop",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "src-tauri/tauri.conf.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "toml",
+          "path": "src-tauri/Cargo.toml",
+          "jsonpath": "$.package.version"
+        }
+      ]
     }
   }
 }

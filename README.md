@@ -44,8 +44,13 @@ pnpm --filter @andrewshell/outliner test:e2e
   `publishConfig.exports` swaps those to `dist/` when the package is published, so npm
   consumers still get the built bundles. **This means publishing must go through
   `pnpm publish`**, not `npm publish`.
-- **Releases**: release-please watches `packages/outliner` only and tags as `v<version>`.
-  Apps are private and are not part of that flow.
+- **Releases**: release-please manages two packages independently, deciding which one
+  a commit belongs to by the files it touches, not by its scope. `packages/outliner`
+  tags as `v<version>` and is what gets published to npm; `apps/desktop` tags as
+  `desktop-v<version>` and is only versioned, never published — it's private, but its
+  version is still user-visible in the app bundle, so it's worth keeping honest. Both
+  use `bump-minor-pre-major`, so a breaking change goes to the next `0.x` minor rather
+  than declaring 1.0.
 
 ## Desktop app
 

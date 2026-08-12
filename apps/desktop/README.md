@@ -65,11 +65,23 @@ attribute and it launches normally. Hand someone the `.dmg`, though, and Gatekee
 will refuse it on their machine; real distribution needs a Developer ID and
 notarization.
 
-**The bundle version is pinned at `0.1.0`** in `src-tauri/tauri.conf.json` and does
-not track the library. release-please only manages `packages/outliner` (apps are
-private and outside that flow), so the library reaching 0.2.0 leaves the app's DMG
-filename and About box reading 0.1.0. Bump it by hand when the app itself is worth
-versioning.
+**The bundle version is managed by release-please, and it is the app's own.** This
+app is a release-please package in its own right, versioned from the commits that
+touch `apps/desktop` — release-please decides that by files changed, not by commit
+scope — so `GeekityFlow 0.3.0` says something about the app rather than about the
+library it happens to embed. Its tags are prefixed (`desktop-v0.2.0`) to keep them
+clear of the library's bare `v0.2.0`.
+
+Three files carry the version and all three are bumped for you: this package's
+`package.json`, `src-tauri/tauri.conf.json` (the authoritative one — it is what
+`generate_context!` reads for the bundle's `CFBundleShortVersionString`, the DMG
+filename and the About box), and `src-tauri/Cargo.toml`. Do not edit them by hand;
+release-please will overwrite whatever you write.
+
+The reason the app had to become its own package rather than ride along on the
+library's: release-please resolves `extra-files` paths relative to the package
+directory and rejects `../` outright, so nothing under `packages/outliner` can
+reach `apps/desktop/src-tauri/tauri.conf.json` (googleapis/release-please#2477).
 
 ### Why `pnpm dev:desktop` shows a generic Dock icon
 
