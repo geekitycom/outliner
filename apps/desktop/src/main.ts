@@ -1,20 +1,10 @@
-import { createOutliner, UP, DOWN, LEFT, RIGHT } from '@andrewshell/outliner'
+import { createOutliner } from '@andrewshell/outliner'
 import '@andrewshell/outliner/styles.css'
 import './styles.css'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { invoke } from '@tauri-apps/api/core'
-import {
-  initDocument,
-  openPathAtBoot,
-  openDocument,
-  saveDocument,
-  saveDocumentAs,
-  confirmClose,
-  confirmQuit,
-  reportError,
-} from './document'
-import { showShortcuts } from './shortcuts'
-import { promptFind, findAgain } from './find'
+import { initDocument, openPathAtBoot, confirmClose, confirmQuit, reportError } from './document'
+import { createMenuActions, registerMenuListeners } from './actions'
 
 // Chrome-free: no toolbar, no buttons. The menu (built in Rust, see
 // src-tauri/src/lib.rs) and this module are the only things that call into
@@ -136,10 +126,15 @@ async function handleFlowPrompt(confirm: () => Promise<boolean>): Promise<void> 
 // ...) with no permissions: listen() was denied, so the whole menu was dead
 // in second and subsequent windows. It's a `"*"` glob now. Permission and
 // window scope are two separate gates; granting one doesn't grant the other.
-void appWindow.listen('menu-open', () => void openDocument())
-void appWindow.listen('menu-save', () => void saveDocument())
-void appWindow.listen('menu-save-as', () => void saveDocumentAs())
-void appWindow.listen('menu-keyboard-shortcuts', () => void showShortcuts())
+//
+// Which events those are is not written out here any more: both sides read
+// ../menu.json, so this subscribes to `menu-{id}` for every custom item that
+// has a handler, built from the same file Rust builds the menu from (see
+// src/actions.ts). The listener and the emit can no longer disagree about a
+// name, which is exactly how a menu item used to end up drawing perfectly and
+// doing nothing.
+registerMenuListeners((event, handler) => void appWindow.listen(event, handler), createMenuActions(outliner))
+
 // 'menu-quit' and 'menu-close-window-group' are the two events Rust
 // doesn't resolve a single focused window for before emitting (see
 // build_menu's "quit"/"close-window" doc comments) — each is targeted at
@@ -148,67 +143,6 @@ void appWindow.listen('menu-keyboard-shortcuts', () => void showShortcuts())
 // this window on any given step.
 void appWindow.listen('menu-quit', () => void handleFlowPrompt(confirmQuit))
 void appWindow.listen('menu-close-window-group', () => void handleFlowPrompt(confirmClose))
-
-// Outliner menu: every no-argument operation maps straight to a library
-// call, so they're driven from a table instead of a growing if/else chain —
-// see the Outliner section of README.md's "Menu layout" for what each one
-// does. expand()/collapse() call markChanged() internally (expansion state
-// is part of the saved OPML), so these legitimately mark the document dirty
-// and the title's `•` picks that up like any other edit — nothing here
-// needs to suppress that.
-const OUTLINER_ACTIONS: Record<string, () => void> = {
-  'menu-expand': () => outliner.expand(),
-  'menu-collapse': () => outliner.collapse(),
-  'menu-expand-all-subs': () => outliner.expandAllSubs(),
-  'menu-expand-everything': () => outliner.expandEverything(),
-  'menu-collapse-everything': () => outliner.collapseEverything(),
-  'menu-hoist': () => outliner.hoist(),
-  'menu-dehoist': () => outliner.deHoist(),
-}
-for (const [event, action] of Object.entries(OUTLINER_ACTIONS)) {
-  void appWindow.listen(event, action)
-}
-// Find… and Find again are the odd ones out: they need UI (a prompt for
-// Find…) or extra state (Find again has to know whether a search has
-// happened yet), so they're routed to find.ts instead of the flat table
-// above.
-void appWindow.listen('menu-find', () => void promptFind(outliner))
-void appWindow.listen('menu-find-again', () => void findAgain(outliner))
-
-// Reorg menu: same one-call-per-item shape as OUTLINER_ACTIONS above, kept
-// as its own table (rather than folded into that one) so it stays obvious
-// at a glance which menu each entry belongs to now that there are two.
-//
-// Unlike every other accelerator in this app, the eight below (Cmd-U/D/L/R,
-// Cmd-\, Cmd-/, Cmd-[, Cmd-]) are bound in Rust (see reorg_submenu's doc
-// comment in src-tauri/src/lib.rs) even though they duplicate keys the
-// outliner's own keydown handler already binds via CONCORD_KEYSTROKES
-// (packages/outliner/src/util.ts) — on macOS the menu wins that race and
-// shadows the outliner's handler entirely. That's fine *here* because it
-// was verified against packages/outliner/src/keyboard.ts: the shadowed
-// cases ('reorg-up'/'reorg-down'/'reorg-left'/'reorg-right'/'promote'/
-// 'demote'/'toggle-comment'/'run-selection') are thin unconditional
-// wrappers around these exact same Outliner methods, with no text-mode
-// branching or cursor-state guard the menu path would skip — so shadowing
-// them changes nothing observable. That is NOT true of Edit menu's Undo/
-// Select All (a predefined item there would invoke the webview's native
-// undo/select instead of the outliner's own), which is why those stay
-// unbound; see design note 3 in README.md.
-const REORG_ACTIONS: Record<string, () => void> = {
-  'menu-reorg-move-up': () => outliner.reorg(UP),
-  'menu-reorg-move-down': () => outliner.reorg(DOWN),
-  'menu-reorg-move-left': () => outliner.reorg(LEFT),
-  'menu-reorg-move-right': () => outliner.reorg(RIGHT),
-  'menu-reorg-toggle-comment': () => outliner.toggleComment(),
-  'menu-reorg-run-selection': () => outliner.runSelection(),
-  'menu-reorg-delete-line': () => outliner.deleteLine(),
-  'menu-reorg-promote': () => outliner.promote(),
-  'menu-reorg-demote': () => outliner.demote(),
-  'menu-reorg-sort': () => outliner.sort(),
-}
-for (const [event, action] of Object.entries(REORG_ACTIONS)) {
-  void appWindow.listen(event, action)
-}
 
 // The native close button (red traffic light) doesn't go through the menu
 // at all, so it needs its own guard here.
