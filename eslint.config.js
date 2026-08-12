@@ -25,7 +25,7 @@ export default tseslint.config(
   },
   {
     // Tests run in jsdom (browser globals) via Vitest.
-    files: ['packages/*/test/**/*.ts'],
+    files: ['packages/*/test/**/*.ts', 'apps/*/test/**/*.ts'],
     languageOptions: {
       globals: { ...globals.browser, ...globals.node },
     },
