@@ -110,7 +110,7 @@ id could be mistyped are now one place it can't be.
 
 ---
 
-## 3. Give the quit/close flow a pure core — **Strong**
+## 3. Give the quit/close flow a pure core — **DONE**
 
 **Files:** `apps/desktop/src-tauri/src/lib.rs:174-322` (`flow_response`,
 `advance_flow`, `advance_quit_step`, `advance_close_group_step`), `:1268-1275`
@@ -136,6 +136,56 @@ place.
 **Prerequisite, and it is cheap.** `.github/workflows/ci.yml` has **no Rust
 toolchain step**, and `pnpm build` only runs Vite. A `lib.rs` that does not compile
 passes CI today. Add `cargo check` before touching any of this.
+
+**Shipped** as `apps/desktop/src-tauri/src/flow.rs` — 910 lines, and the only
+occurrence of the string `tauri` in it is the comment saying it imports nothing from
+`tauri`. That absence is the seam. Rust tests 5 → 20.
+
+Two departures from the sketch above, both improvements:
+
+- **The `(dirty, live)` pair got a name.** `Windows::new(&map, &labels)` intersects
+  them once at construction, so `is_dirty` *cannot* answer true for a window that
+  is not live. The three staleness checks didn't so much collapse as become
+  unrepresentable — which is stronger than three checks agreeing by discipline.
+- **Starting and continuing a flow are the same function.** `advance(pending, input,
+  windows)` takes `StartQuit` / `StartCloseGroup` / `Resolved` alike, which puts the
+  re-entrancy guard in one place instead of one per flow.
+
+The prerequisite was satisfied first — and earned its keep immediately. The `rust`
+job's very first run on `main` failed, exposing a pre-existing macOS-only
+`tabbing_identifier` call in `create_document_window` that had never been compiled
+for Linux.
+
+### Follow-up: the flow can stall if a window dies mid-prompt
+
+**Not introduced by this work — the old code had the same race**, with its liveness
+check sitting microseconds earlier in the same sequence. Recorded here because the
+pure core now makes it cheap to fix and to test, which it previously was not.
+
+`run_flow` reads a `Windows` snapshot, asks the machine what to do, and executes the
+resulting `Step`s. If a window is destroyed *between* the snapshot and its `Prompt`
+step landing, the prompt goes to a window that no longer exists. No response ever
+comes back, `PendingFlow` stays `Some`, and because the re-entrancy guard correctly
+refuses to start a second walk on top of a running one, **every subsequent Cmd-Q
+does nothing.** The app cannot be quit from its own menu, with no visible prompt
+explaining why.
+
+The window is genuinely small, and `WindowEvent::Destroyed` cleanup makes it smaller
+still — but the failure mode is "app cannot be quit", which is the same class of
+bug design note 8 exists to prevent.
+
+Two directions, neither explored:
+
+- Have the adapter re-check liveness at the moment it executes a `Prompt`, and feed
+  a synthetic `Resolved { response: Proceed }` back into the machine when the target
+  has gone. Keeps all the policy in the pure core; the adapter only reports what it
+  observed.
+- Treat an un-emittable `Prompt` as a failed step and let the machine decide. Same
+  shape, more general, needs `Step` execution to be fallible.
+
+Either is a table test in `flow.rs` plus a few lines in the adapter. The reason to
+prefer the first is that it keeps the adapter free of judgement: "this window is
+gone" is an observation, "therefore skip it" is a decision.
 
 ---
 
