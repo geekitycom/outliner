@@ -63,6 +63,31 @@ describe('structural operations', () => {
     o.collapse()
     expect(o.cursor.element.classList.contains('collapsed')).toBe(true)
   })
+
+  it('opExpand fires only when something actually expands', () => {
+    // The README advertises opExpand as the hook for work that should happen
+    // *because* a headline opened -- "e.g. lazy-load an include node". Firing
+    // it on an expand that does nothing makes that work run repeatedly, on
+    // every redundant expand, for a headline whose subs are already on screen.
+    const o = mount(opml('<outline text="p"><outline text="c"/></outline>'))
+    const seen: string[] = []
+    o.setCallbacks({ opExpand: (node) => void seen.push(node.getLineText()) })
+
+    // Built collapsed (no expansionState in the head), so this one really opens.
+    o.expand()
+    expect(seen).toEqual(['p'])
+
+    // Already expanded: nothing changes, so nothing should be announced.
+    o.expand()
+    expect(seen).toEqual(['p'])
+
+    // A headline with no subs at all can never expand either. This is the case
+    // a bullet click reaches (events.ts: `subsExpanded()` is false for a
+    // childless headline, so the click routes to expand()).
+    o.go(DOWN) // cursor -> c, a leaf
+    o.expand()
+    expect(seen).toEqual(['p'])
+  })
 })
 
 describe('undo', () => {

@@ -146,6 +146,8 @@ const outliner = createOutliner(document.getElementById('outliner')!, {
   },
   callbacks: {
     opInsert: (node) => node.attributes.setOne('created', new Date().toUTCString()),
+    // fires only when a headline actually expands, never on a redundant
+    // expand of something already open (or of a headline with no subs)
     opExpand: (node) => { /* e.g. lazy-load an include node */ },
   },
 })

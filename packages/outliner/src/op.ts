@@ -215,6 +215,15 @@ export class Op {
   collapse(triggerCallbacks = true): void {
     const node = this.getCursor()
     if (!node) return
+    // Deliberately not mirrored on `expand()` below, which had to move its
+    // callback behind its guard. There is no equivalent guard to move it
+    // behind here, and there cannot be one: collapsing an *already collapsed*
+    // headline is not a no-op. The loop below also collapses every descendant
+    // that still has expanded subs -- subs the user cannot see, precisely
+    // because this headline is closed over them -- and expansion state is
+    // persisted in the OPML (`<head><expansionState>`), so that second collapse
+    // is a real change to the saved document. `opCollapse` therefore fires
+    // whenever collapse is asked for, because collapse always has work to do.
     if (triggerCallbacks) this.o.fireCallback('opCollapse', this.setCursorContext(node))
     node.classList.add('collapsed')
     node.querySelectorAll('ol').forEach((ol) => {
@@ -226,8 +235,24 @@ export class Op {
   expand(triggerCallbacks = true): void {
     const node = this.getCursor()
     if (!node) return
-    if (triggerCallbacks) this.o.fireCallback('opExpand', this.setCursorContext(node))
+    // The guard comes before the callback, not after it. `opExpand` is
+    // documented as the hook for work that happens *because* a headline
+    // opened -- the README's example is lazy-loading an include node -- and
+    // firing it on an expand that changes nothing made that work run again on
+    // every redundant expand: a headline already showing its subs, or a leaf
+    // with no subs to show. The leaf case is not hypothetical: events.ts
+    // routes a bullet click to `expand()` whenever `subsExpanded()` is false,
+    // which is true of every childless headline, so a click on any leaf used
+    // to announce an expansion that could not possibly have happened.
+    //
+    // Nothing downstream wanted the unconditional version. This method already
+    // skipped `markChanged()` on the same early return, so a no-op expand was
+    // never a document change; the desktop app's `opExpand` handler
+    // (apps/desktop/src/document.ts) only re-syncs the title bar from the
+    // changed flag, so it was doing nothing on those firings anyway. The
+    // callback now means what its name says: a headline expanded.
     if (!node.classList.contains('collapsed')) return
+    if (triggerCallbacks) this.o.fireCallback('opExpand', this.setCursorContext(node))
     node.classList.remove('collapsed')
 
     if (scrollEnabled) {
