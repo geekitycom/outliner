@@ -53,7 +53,9 @@ pub enum Flow {
   /// when the walk reaches it, *before* it is prompted — so the answer that
   /// comes back later resumes from the rest of the list rather than
   /// re-visiting the window that just answered.
-  CloseGroup { remaining: Vec<String> },
+  CloseGroup {
+    remaining: Vec<String>,
+  },
 }
 
 /// What the user chose in a window's unsaved-changes prompt.
@@ -226,8 +228,56 @@ impl Windows {
 
 /// The whole flow, as one total function from (state, input, world) to (new
 /// state, effects).
-pub fn advance(_pending: Option<&Flow>, _input: Input, _windows: &Windows) -> Outcome {
-  todo!()
+///
+/// `pending` is what `PendingFlow` holds; the returned `Outcome::pending` is
+/// what it should hold afterwards, unconditionally — the caller assigns it
+/// rather than deciding anything about it, including on the paths where the
+/// answer is "the same thing it held before".
+pub fn advance(pending: Option<&Flow>, input: Input, windows: &Windows) -> Outcome {
+  match input {
+    Input::StartQuit => drive(Flow::Quit, windows, Vec::new()),
+    _ => todo!(),
+  }
+}
+
+/// Works out the next thing to wait on, appending to `steps` whatever has to
+/// happen before then.
+fn drive(flow: Flow, windows: &Windows, mut steps: Vec<Step>) -> Outcome {
+  match flow {
+    Flow::Quit => {
+      // Hygiene, not correctness: `next_dirty` already ignores these (see
+      // `Windows`). Dropping them keeps the map down to the windows that
+      // exist, rather than one entry per window ever opened.
+      steps.extend(
+        windows
+          .stale()
+          .iter()
+          .map(|label| Step::Forget { label: label.clone() }),
+      );
+      match windows.next_dirty() {
+        Some(label) => {
+          steps.push(Step::Prompt {
+            label: label.to_string(),
+            event: PROMPT_QUIT,
+          });
+          Outcome {
+            pending: Some(Flow::Quit),
+            steps,
+          }
+        }
+        // Nothing left to ask about, and — because that answer came from
+        // `Windows` rather than from a flag this flow set — the dirty state is
+        // genuinely honest at this moment. That is what stops the adapter's
+        // `app.exit(0)` from being bounced straight back by `ExitRequested`'s
+        // own check. See `Step::Exit`.
+        None => {
+          steps.push(Step::Exit);
+          Outcome { pending: None, steps }
+        }
+      }
+    }
+    Flow::CloseGroup { .. } => todo!(),
+  }
 }
 
 #[cfg(test)]
@@ -261,5 +311,64 @@ mod tests {
     assert_eq!(windows.next_dirty(), None);
     assert!(!windows.any_dirty());
     assert_eq!(windows.stale(), &["win-1".to_string()]);
+  }
+
+  // ---- Quit --------------------------------------------------------------
+
+  /// Cmd-Q with nothing unsaved anywhere: no prompt, straight out.
+  #[test]
+  fn quit_with_nothing_dirty_exits_immediately() {
+    let windows = Windows::new(&dirty(&[("win-1", false)]), &live(&["win-1"]));
+
+    let outcome = advance(None, Input::StartQuit, &windows);
+
+    assert_eq!(outcome.steps, vec![Step::Exit]);
+    assert_eq!(outcome.pending, None);
+  }
+
+  /// The prompt goes to one named window, and Quit stays pending until that
+  /// window answers.
+  #[test]
+  fn quit_prompts_the_dirty_window_and_waits() {
+    let windows = Windows::new(
+      &dirty(&[("win-1", false), ("win-2", true)]),
+      &live(&["win-1", "win-2"]),
+    );
+
+    let outcome = advance(None, Input::StartQuit, &windows);
+
+    assert_eq!(
+      outcome.steps,
+      vec![Step::Prompt {
+        label: "win-2".to_string(),
+        event: "menu-quit",
+      }]
+    );
+    assert_eq!(outcome.pending, Some(Flow::Quit));
+  }
+
+  /// A dirty entry for a window that has already gone must not stop the walk
+  /// — it is dropped and the flow carries on to a window that does exist.
+  /// This is the hang the whole `Windows` intersection exists to prevent,
+  /// asserted end to end rather than at the accessor.
+  #[test]
+  fn quit_forgets_a_stale_entry_and_keeps_walking() {
+    let windows = Windows::new(&dirty(&[("win-gone", true), ("win-2", true)]), &live(&["win-2"]));
+
+    let outcome = advance(None, Input::StartQuit, &windows);
+
+    assert_eq!(
+      outcome.steps,
+      vec![
+        Step::Forget {
+          label: "win-gone".to_string(),
+        },
+        Step::Prompt {
+          label: "win-2".to_string(),
+          event: "menu-quit",
+        },
+      ]
+    );
+    assert_eq!(outcome.pending, Some(Flow::Quit));
   }
 }
