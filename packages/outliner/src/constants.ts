@@ -17,7 +17,7 @@ export const IS_MOBILE = /Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(
  * This package's version. Kept in sync with package.json by release-please via
  * the trailing annotation — do not edit the annotation comment.
  */
-export const VERSION = '0.1.0' // x-release-please-version
+export const VERSION = '0.2.0' // x-release-please-version
 
 /**
  * `<head>` field names that `outlineToXml()` generates fresh on every save
