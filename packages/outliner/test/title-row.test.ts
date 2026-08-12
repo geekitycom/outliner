@@ -288,6 +288,29 @@ describe('title row (opt-in via prefs.titleRow)', () => {
     expect(o.toOpml()).toContain('<title>Unblurred</title>')
   })
 
+  it('toText() includes a headline typed but not yet blurred out of', () => {
+    // The same Cmd-S-straight-from-the-field case as above, for the *other*
+    // document serializer. `toOpml()` flushed the row; `toText()` went
+    // straight to the tree, so a "save as text" taken mid-edit wrote the
+    // previous text.
+    //
+    // Hoisted, deliberately: at the root the row edits the document title,
+    // which `toText()` doesn't emit at all, so the whole defect would be
+    // invisible there. Hoisted, the row edits a *headline* -- the one whose
+    // subs are on screen, and which is visible nowhere else -- so the missing
+    // flush loses body content, not just a title, and the file on disk names
+    // the section by its old name with nothing on screen saying so.
+    const o = mount(opml('<outline text="p"><outline text="c"/></outline>'))
+    o.prefs({ titleRow: true })
+    o.hoist() // cursor starts on "p"; the row now edits "p" itself
+
+    const el = requireTitleRowText(o)
+    el.focus()
+    el.textContent = 'Renamed'
+
+    expect(o.toText()).toContain('Renamed')
+  })
+
   it('an edit started on the title lands on the title, even if a hoist intervenes', () => {
     const o = mount(opml('<outline text="a"><outline text="a1"/></outline>'))
     o.prefs({ titleRow: true })

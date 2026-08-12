@@ -272,6 +272,19 @@ Committing at the root calls `setTitle()`; committing while hoisted renames
 the hoisted headline in place (and marks the document changed, like any
 other edit) — the rename survives `deHoist()`/`deHoistAll()`.
 
+**Serializing settles an edit that's still open.** `toOpml()` and `toText()`
+both commit whatever is in the row before they walk the tree, so a save taken
+straight from the field — Cmd-S without leaving it first — writes what's on
+screen rather than the previous text. This matters most while hoisted, where
+the row is editing a *headline*: `toText()` doesn't emit the document title at
+all, so at the root a stale read is invisible, but hoisted it would write out
+body content one rename out of date. The **readers do not** do this:
+`getTitle()` and `getHeaders()` stay side-effect-free and can report a value
+the row has since been typed over. That's deliberate — committing marks the
+document changed and hands the caret back out of the field, and a getter that
+moved the caret merely by being asked a question is the bug `docs/adr/0001`
+exists to prevent.
+
 With `prefs: { readonly: true }` the row **cannot be typed into at all** — not
 merely "typing is discarded on commit" — matching the outline below it, and
 whether readonly was set at construction or flipped later with

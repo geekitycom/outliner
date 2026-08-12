@@ -418,15 +418,42 @@ export class Outliner {
     this.op.xmlToOutline(opml, setFocus, rawHtml)
   }
 
+  // Both of these are *serializers* — they produce the document a caller is
+  // about to write somewhere — so both settle a pending title-row edit before
+  // walking the tree. The rule is drawn at serializers on purpose, and the two
+  // halves of it matter separately:
+  //
+  // A serializer flushes because the alternative is a file on disk that
+  // disagrees with the screen, with nothing to warn the user: Cmd-S taken
+  // while the caret is still in the row wrote the *previous* text and looked
+  // like it had worked.
+  //
+  // A *getter* deliberately does not — `getTitle()`/`getHeaders()` stay
+  // side-effect-free even though they too can read a stale-looking value
+  // mid-edit. Flushing commits the edit, marks the document changed and hands
+  // the caret back out of the field, so a getter that flushed would move the
+  // caret as a side effect of being asked a question. That is exactly the
+  // anti-pattern docs/adr/0001 exists to remove (`getFocusRoot()` used to
+  // steal the caret merely by being called). A caller who wants the pending
+  // text settled can say so — Enter, or a blur — and one who is only reading
+  // gets to read without changing anything.
   toOpml(ownerName?: string, ownerEmail?: string, ownerId?: string): string {
-    // Commit a title the user has typed but not yet blurred out of, so
-    // saving straight from the field writes what's on screen rather than
-    // the previous title.
     this.titleRowCtl.flush()
     return this.op.outlineToXml(ownerName, ownerEmail, ownerId)
   }
 
   toText(): string {
+    // Missing here for as long as `toOpml()` had it, which made the two
+    // serializers disagree about the same document at the same moment for the
+    // second time (see `Op.outlineToText`, which had to be taught about hoist
+    // for the same reason).
+    //
+    // It bites hardest while hoisted. At the root the row edits the document
+    // title, which `toText()` never emits, so a stale read is invisible;
+    // hoisted, the row edits the *headline* the view is hoisted into — text
+    // that appears nowhere else on screen — so a "save as text" taken mid-edit
+    // silently wrote body content that was one rename out of date.
+    this.titleRowCtl.flush()
     return this.op.outlineToText()
   }
 
