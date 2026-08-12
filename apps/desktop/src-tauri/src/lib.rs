@@ -285,7 +285,8 @@ fn focused_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
 /// and optionally grouped as a new tab in `group_with`'s tab group.
 ///
 /// `group_with: None` starts a brand-new tab group (File > New Window) —
-/// the window still gets `tabbing_identifier` below, so the user (or macOS
+/// the window still gets `tabbing_identifier` below (on macOS, the only
+/// platform with native window tabs at all), so the user (or macOS
 /// itself, per its own "Prefer tabs when opening documents" setting) can
 /// still merge it into another group later; nothing here does that
 /// automatically for a standalone window.
@@ -310,17 +311,35 @@ fn create_document_window(
     Some(p) => format!("index.html?path={}", utf8_percent_encode(p, NON_ALPHANUMERIC)),
     None => "index.html".to_string(),
   };
-  let window = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+  let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
     .title("GeekityFlow")
-    .inner_size(900.0, 700.0)
-    // Makes every document window eligible for the system's own tab
-    // affordances (drag-to-merge, Merge All Windows, "Prefer tabs when
-    // opening documents") even when group_with is None below — see the
-    // "why native tabs needed raw AppKit" design note in README.md for why
-    // *explicit* grouping (group_as_tab) is still needed on top of this
-    // rather than relying on tabbing_identifier alone.
-    .tabbing_identifier("com.geekity.flow.document")
-    .build()?;
+    .inner_size(900.0, 700.0);
+
+  // DO NOT fold this back into the chain above. `tabbing_identifier` is
+  // `#[cfg(target_os = "macos")]` in the tauri crate — native window tabs
+  // are an AppKit concept and no such method exists on Linux/Windows — so a
+  // chained call is a hard compile error off macOS ("no method named
+  // `tabbing_identifier` found for struct `WebviewWindowBuilder`"). An
+  // attribute cannot be attached to one call in the middle of a method
+  // chain, only to a whole statement, which is the entire reason the chain
+  // is broken in two here and the builder rebound by a cfg-gated `let`.
+  // It looks like ordinary Tauri API rather than the raw AppKit everything
+  // else in this file guards, which is exactly how it stayed unguarded until
+  // CI first ran cargo on Linux.
+  //
+  // What it buys, on the platform that has it: it makes every document
+  // window *eligible* for the system's own tab affordances (drag-to-merge,
+  // Merge All Windows, "Prefer tabs when opening documents") even when
+  // group_with is None below. It is not what actually groups anything — see
+  // the "why native tabs needed raw AppKit" design note in README.md for why
+  // *explicit* grouping (group_as_tab) is still needed on top of this rather
+  // than relying on tabbing_identifier alone. Elsewhere there is nothing to
+  // be eligible for: group_as_tab's own non-macOS twin below is already a
+  // no-op, and "New"/"Open"'s new tab is just an ordinary new window.
+  #[cfg(target_os = "macos")]
+  let builder = builder.tabbing_identifier("com.geekity.flow.document");
+
+  let window = builder.build()?;
 
   if let Some(target) = group_with {
     group_as_tab(app, target, &window);
