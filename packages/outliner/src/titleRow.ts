@@ -211,9 +211,40 @@ export class TitleRow {
     if (this.editing()) this.cancel()
   }
 
-  /** Mirror `root`'s readonly state onto the row's own `<ol>` so the cursor
-   *  styling matches (actual edit blocking is enforced in `beginEdit`). */
+  /**
+   * Mirror `root`'s readonly state onto the row: no typing, and the same
+   * cursor styling the outline gets.
+   *
+   * `contenteditable` is the load-bearing half. `beginEdit()` refusing to open
+   * a session (and `commit()` therefore never running) blocks the *write*, but
+   * it does nothing about the field itself: the browser still accepted every
+   * keystroke, showed the typed characters, and then discarded them the moment
+   * anything refreshed the row. A readonly document that lets you type a new
+   * title and then loses it looks broken, not protected — so the field stops
+   * taking input at all, which is what `prefs: { readonly: true }` promises.
+   *
+   * Called from `Outliner.applyTitleRowPref()`, which runs on *every*
+   * `prefs()` update including the one the constructor makes from
+   * `options.prefs` — so a row born readonly is never briefly typeable, even
+   * though `build()` had to create the field editable (readonly is not known
+   * at that point, and the common case is a writable row).
+   *
+   * An edit already open when readonly arrives is *abandoned*, not committed.
+   * This inverts the rule `refresh()` follows, deliberately: everywhere else,
+   * settling an interrupted session as a commit is how text the user typed on
+   * purpose gets kept, and nothing is lost by keeping it. Here, keeping it
+   * would perform exactly the document change that turning readonly on exists
+   * to forbid — and the caller flipping the pref is the application (the file
+   * is locked, this is a preview), not the user finishing a thought. Aborting
+   * also matters for the caret: an open session holds a claim, and a claim left
+   * standing on a field that can no longer be typed into would suspend the
+   * outline's keystroke dispatch with no way left to end it.
+   */
   setReadonly(readonly: boolean): void {
+    // Before the attribute flips, while `cancel()` can still put the previous
+    // text back into a field the browser will let it write to.
+    if (readonly) this.abortEdit()
+    this.text.setAttribute('contenteditable', readonly ? 'false' : 'true')
     this.element.querySelector('ol')?.classList.toggle('readonly', readonly)
   }
 

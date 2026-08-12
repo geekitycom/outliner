@@ -272,6 +272,14 @@ Committing at the root calls `setTitle()`; committing while hoisted renames
 the hoisted headline in place (and marks the document changed, like any
 other edit) — the rename survives `deHoist()`/`deHoistAll()`.
 
+With `prefs: { readonly: true }` the row **cannot be typed into at all** — not
+merely "typing is discarded on commit" — matching the outline below it, and
+whether readonly was set at construction or flipped later with
+`setReadonly()`. Turning readonly on while the row is mid-edit **abandons**
+that edit and restores the previous text: keeping it would perform the very
+document change readonly exists to forbid. (This is the one place the row
+does *not* settle an interrupted edit as a commit.)
+
 It is **deliberately outside the outline's cursor model** — arrow keys never
 land on it, and it's never part of `toOpml()` output (enabling or disabling
 it doesn't change a single byte of the serialized document). Toggle it any

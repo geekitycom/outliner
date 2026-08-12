@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import type { Outliner } from '../src'
+import { Outliner } from '../src'
 import { mount, opml, bodyTree, headlineCount, keydown, KEY } from './helpers'
 
 /** The title row's editable field, or null if the row isn't in the DOM. */
@@ -78,6 +78,56 @@ describe('title row (opt-in via prefs.titleRow)', () => {
 
     o.prefs({ titleRow: false })
     expect(titleRowText(o)).toBeNull()
+  })
+
+  it('a readonly row cannot be typed into, however readonly arrived', () => {
+    // `contenteditable` is the whole of "can this be typed into" -- there is no
+    // other gate between a keypress and a character landing in the field.
+    // Blocking only the *commit* (which `beginEdit()` already did) left a row
+    // that accepted every keystroke, showed the text, and then silently threw
+    // it away, which reads as a broken document rather than a protected one.
+    //
+    // Both arrival paths are checked because they are different code: readonly
+    // set at construction runs through `prefs()` once, from the constructor,
+    // *after* the row has already been built with `contenteditable="true"`.
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const born = new Outliner(container, { prefs: { titleRow: true, readonly: true } })
+    expect(requireTitleRowText(born).getAttribute('contenteditable')).toBe('false')
+
+    const later = mount(opml('<outline text="a"/>'))
+    later.prefs({ titleRow: true })
+    expect(requireTitleRowText(later).getAttribute('contenteditable')).toBe('true')
+    later.setReadonly(true)
+    expect(requireTitleRowText(later).getAttribute('contenteditable')).toBe('false')
+
+    // And it comes back: readonly is a mode, not a one-way door.
+    later.setReadonly(false)
+    expect(requireTitleRowText(later).getAttribute('contenteditable')).toBe('true')
+  })
+
+  it('going readonly mid-edit abandons the edit rather than committing it', () => {
+    // The one place the row's usual "settle an interrupted edit as a commit"
+    // rule has to invert. Everywhere else, committing keeps text the user typed
+    // on purpose; here committing would write the document change that turning
+    // readonly on exists to forbid -- and the caller asking for readonly is the
+    // app (the file is locked, this is a preview), not the user finishing a
+    // thought. So the edit is abandoned, the field goes back to what it said
+    // before, and the title is untouched.
+    const o = mount(opmlTitled('Original', '<outline text="a"/>'))
+    o.prefs({ titleRow: true })
+    const el = requireTitleRowText(o)
+    el.focus()
+    el.textContent = 'Typed But Not Committed'
+
+    o.setReadonly(true)
+
+    expect(o.getTitle()).toBe('Original')
+    expect(requireTitleRowText(o).textContent).toBe('Original')
+    // The abandoned edit must also have handed the caret back, or the outline
+    // stays suspended forever behind a field nobody can even type in.
+    keydown(KEY.down)
+    expect(o.cursor.getLineText()).toBe('a')
   })
 
   it('at the root, shows the OPML title', () => {
