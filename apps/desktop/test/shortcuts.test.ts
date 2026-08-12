@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { showShortcuts } from '../src/shortcuts'
 
 // Characterisation tests for the Help > Keyboard Shortcuts sheet.
@@ -20,13 +20,38 @@ import { showShortcuts } from '../src/shortcuts'
 // change was intended and re-pin it.
 //
 // They pin the drift, too. The transcription has fallen behind the sources in
-// four places (Cmd-F, Cmd-G, Cmd-Shift-W and Cmd-Shift-N are all bound but
-// absent from the sheet, and Cmd-, is filed under the app's own group when it
-// is really a library keystroke). None of that is corrected here. Pinning the
-// current output including its mistakes is what makes the rewrite legible: the
-// diff to these expectations then shows exactly which of the user-visible
-// changes are the drift being fixed, instead of hiding them among rows that
-// were already right.
+// several places -- Cmd-F and Cmd-G (Find, Find again), Cmd-Shift-N (New
+// Window), Cmd-W (Close Tab), Cmd-Shift-W (Close Window) and Cmd-Q (Quit) are
+// all bound but absent from the sheet, and Cmd-, is filed under the app's own
+// group when it is really a library keystroke (toggle-expand). None of that is
+// corrected here. Pinning the current output including its mistakes is what
+// makes the rewrite legible: the diff to these expectations then shows exactly
+// which user-visible changes are the drift being fixed, instead of hiding them
+// among rows that were already right.
+
+// The sheet renders its keystrokes one way on macOS (⌘⇧S) and another way
+// everywhere else (Ctrl+Shift+S), choosing between them by matching /Mac/
+// against navigator.userAgent. jsdom's default user agent names the Node
+// platform ("darwin", "linux"), so it matches neither branch reliably and, worse,
+// would make these tests read differently on a developer's Mac than on CI.
+// Every test below therefore states the platform it is testing.
+const MAC_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15'
+const WINDOWS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+
+const REAL_USER_AGENT = window.navigator.userAgent
+
+function setUserAgent(userAgent: string): void {
+  // An own property on the navigator instance shadows the prototype getter,
+  // and configurable lets the next test replace it again.
+  Object.defineProperty(window.navigator, 'userAgent', {
+    value: userAgent,
+    configurable: true,
+  })
+}
+
+afterEach(() => {
+  setUserAgent(REAL_USER_AGENT)
+})
 
 /**
  * Open the sheet, take the content it rendered, and close it again.
@@ -53,10 +78,32 @@ async function renderShortcutsSheet(): Promise<HTMLElement> {
 
 /** The group headings, in the order the sheet lays them out. */
 function groupTitles(content: HTMLElement): string[] {
-  return [...content.querySelectorAll('.shortcuts-group h3')].map((h) => h.textContent)
+  return [...content.querySelectorAll('.shortcuts-group h3')].map((h) => h.textContent ?? '')
+}
+
+/**
+ * The [keystroke, description] rows of one named group, in order.
+ *
+ * Looking the group up by its heading rather than by index keeps a failure
+ * legible: reordering the groups then fails the one test that is about their
+ * order, instead of failing every group's test with rows that look shuffled.
+ */
+function rowsOfGroup(content: HTMLElement, title: string): string[][] {
+  const group = [...content.querySelectorAll('.shortcuts-group')].find(
+    (section) => section.querySelector('h3')?.textContent === title,
+  )
+  if (!group) throw new Error(`the sheet has no "${title}" group`)
+
+  return [...group.querySelectorAll('tbody tr')].map((row) =>
+    [...row.querySelectorAll('td')].map((cell) => cell.textContent ?? ''),
+  )
 }
 
 describe('the keyboard shortcuts sheet', () => {
+  beforeEach(() => {
+    setUserAgent(MAC_USER_AGENT)
+  })
+
   it('lays out its groups in a fixed order', async () => {
     const content = await renderShortcutsSheet()
 
@@ -69,5 +116,146 @@ describe('the keyboard shortcuts sheet', () => {
       'Clipboard',
       'File',
     ])
+  })
+
+  it('is titled, and closes from a dialog-method form', async () => {
+    const content = await renderShortcutsSheet()
+
+    expect(content.querySelector('h2')?.textContent).toBe('Keyboard Shortcuts')
+
+    // method="dialog" is what makes the button close the sheet without any
+    // JavaScript of its own, and autofocus is what makes Return close it.
+    const form = content.querySelector('form.shortcuts-close')
+    expect(form?.getAttribute('method')).toBe('dialog')
+    const closeButton = form?.querySelector('button')
+    expect(closeButton?.textContent).toBe('Close')
+    expect(closeButton?.autofocus).toBe(true)
+  })
+
+  it('lists the arrow keys under Moving', async () => {
+    const content = await renderShortcutsSheet()
+
+    expect(rowsOfGroup(content, 'Moving')).toEqual([
+      ['↑', 'Move to the previous headline'],
+      ['↓', 'Move to the next headline'],
+      ['←', 'With headlines selected, move up to the parent'],
+      ['→', 'With headlines selected, move down into the children'],
+    ])
+  })
+
+  it('lists the text and headline commands under Editing', async () => {
+    const content = await renderShortcutsSheet()
+
+    expect(rowsOfGroup(content, 'Editing')).toEqual([
+      ['Return', 'Insert a new headline'],
+      ['⌘Return', 'Split the headline at the cursor into two'],
+      ['Backspace', 'Delete the current headline (outside text editing)'],
+      ['Delete', 'Delete the current headline (outside text editing)'],
+      ['⌘Backspace', 'Join the headline with the previous one'],
+      ['⌘A', 'Select all headlines'],
+      ['⌘Z', 'Undo'],
+      ['⌘/', 'Run selection — evaluate the headline as JavaScript'],
+    ])
+  })
+
+  it('lists the reorg and promote/demote commands under Reorganizing', async () => {
+    const content = await renderShortcutsSheet()
+
+    expect(rowsOfGroup(content, 'Reorganizing')).toEqual([
+      ['Tab', 'Demote — indent under the previous headline'],
+      ['⇧Tab', "Promote — outdent to the parent's level"],
+      ['⌘U', 'Move the headline up among its siblings'],
+      ['⌘D', 'Move the headline down among its siblings'],
+      ['⌘L', "Move the headline left — outdent to the parent's level"],
+      ['⌘R', 'Move the headline right — indent under the previous headline'],
+      ['⌘[', "Promote — this headline's children take its place"],
+      ['⌘]', "Demote — following siblings become this headline's children"],
+    ])
+  })
+
+  it('lists the styling commands under Formatting', async () => {
+    const content = await renderShortcutsSheet()
+
+    expect(rowsOfGroup(content, 'Formatting')).toEqual([
+      ['⌘B', 'Bold the selected text'],
+      ['⌘I', 'Italicize the selected text'],
+      ['⌘`', 'Toggle render mode (plain text vs. rendered)'],
+      ['⌘\\', 'Toggle comment on the headline'],
+    ])
+  })
+
+  it('lists expand/collapse under the app\'s own group', async () => {
+    const content = await renderShortcutsSheet()
+
+    // Filed under "GeekityFlow" as though it were the app's own, though
+    // toggle-expand is a library keystroke like everything in the groups
+    // above it (CONCORD_KEYSTROKES, 'meta-,'). Pinned as-is; see the note at
+    // the top of this file.
+    expect(rowsOfGroup(content, 'GeekityFlow')).toEqual([
+      ['⌘,', "Expand or collapse the headline's children"],
+    ])
+  })
+
+  it('lists cut/copy/paste under Clipboard', async () => {
+    const content = await renderShortcutsSheet()
+
+    expect(rowsOfGroup(content, 'Clipboard')).toEqual([
+      ['⌘X', 'Cut'],
+      ['⌘C', 'Copy'],
+      ['⌘V', 'Paste'],
+    ])
+  })
+
+  it('lists the document commands under File', async () => {
+    const content = await renderShortcutsSheet()
+
+    // Four rows, where the File menu itself builds eight items with
+    // accelerators: New Window (⌘⇧N), Close Tab (⌘W), Close Window (⌘⇧W) and
+    // Quit (⌘Q) are all bound and none of them appear here. Pinned as-is; see
+    // the note at the top of this file.
+    expect(rowsOfGroup(content, 'File')).toEqual([
+      ['⌘N', 'New document'],
+      ['⌘O', 'Open…'],
+      ['⌘S', 'Save'],
+      ['⌘⇧S', 'Save As…'],
+    ])
+  })
+
+  it('omits Find and Find again entirely', async () => {
+    const content = await renderShortcutsSheet()
+
+    // ⌘F and ⌘G are bound by the Outliner menu (src-tauri/src/lib.rs) and ⌘F
+    // is in the library's keystroke table as well, but the sheet has never
+    // mentioned either. Asserted rather than left implied, so that the
+    // rewrite which adds them has to come past this line and say so.
+    expect(content.textContent).not.toContain('Find')
+    expect(groupTitles(content)).not.toContain('Outliner')
+  })
+})
+
+describe('the keyboard shortcuts sheet away from macOS', () => {
+  beforeEach(() => {
+    setUserAgent(WINDOWS_USER_AGENT)
+  })
+
+  it('spells the modifiers out and joins them with +', async () => {
+    const content = await renderShortcutsSheet()
+
+    expect(rowsOfGroup(content, 'File')).toEqual([
+      ['Ctrl+N', 'New document'],
+      ['Ctrl+O', 'Open…'],
+      ['Ctrl+S', 'Save'],
+      ['Ctrl+Shift+S', 'Save As…'],
+    ])
+  })
+
+  it('leaves non-modifier keys alone, including the arrows', async () => {
+    const content = await renderShortcutsSheet()
+
+    // Only Cmd/Shift/Alt are translated; every other token renders as-is, so
+    // the arrow glyphs stay glyphs rather than becoming words.
+    expect(rowsOfGroup(content, 'Moving').map((row) => row[0])).toEqual(['↑', '↓', '←', '→'])
+    expect(rowsOfGroup(content, 'Reorganizing')[1][0]).toBe('Shift+Tab')
+    expect(rowsOfGroup(content, 'Editing')[1][0]).toBe('Ctrl+Return')
   })
 })
