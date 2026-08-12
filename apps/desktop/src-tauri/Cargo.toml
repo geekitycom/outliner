@@ -1,12 +1,23 @@
 [package]
+# "app" is tauri init's default and is kept deliberately: renaming the crate
+# renames the bare executable (target/debug/app) and the lib (app_lib) that
+# src/main.rs and the mobile entry point both reference. The user-visible name
+# comes from productName in tauri.conf.json, not from here.
 name = "app"
+# Managed by release-please (see release-please-config.json) alongside
+# ../package.json and ../src-tauri/tauri.conf.json. Don't edit by hand.
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
+description = "GeekityFlow — a keyboard-driven OPML outliner for the desktop"
+authors = ["Andrew Shell <andrew@andrewshell.org>"]
+license = "GPL-3.0-or-later"
+repository = "https://github.com/geekitycom/outliner"
 edition = "2021"
 rust-version = "1.77.2"
+# This crate is the desktop app's shell, not a library anyone should depend on,
+# and "app" is a generic enough name that an accidental `cargo publish` would be
+# both possible and unwelcome. The npm package in packages/outliner is the only
+# thing this repo publishes.
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
