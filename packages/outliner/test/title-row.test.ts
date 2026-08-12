@@ -28,6 +28,31 @@ function opmlSansTimestamp(xml: string): string {
   return xml.replace(/<dateModified>[^<]*<\/dateModified>/, '<dateModified/>')
 }
 
+/**
+ * Type into the row, then take focus away *without* letting its `blur`
+ * through — what a native Save/Open panel does. This is the state the row's
+ * `editing` flag can outlive, so it's the setup for anything that has to
+ * cope with a session whose focus is already gone.
+ *
+ * `once` matters: the suppressor must swallow exactly this one blur. Left
+ * installed it would also eat the blur of a later deliberate commit.
+ */
+function typeThenLoseFocusWithoutBlur(o: Outliner, text: string): void {
+  const el = requireTitleRowText(o)
+  el.focus()
+  el.textContent = text
+  el.addEventListener('blur', (e) => e.stopImmediatePropagation(), {
+    capture: true,
+    once: true,
+  })
+  o.pasteBin.focus()
+}
+
+/** An OPML document whose `<head><title>` is `title`. */
+function opmlTitled(title: string, body: string): string {
+  return opml(body).replace('<title>t</title>', `<title>${title}</title>`)
+}
+
 /** Click into the row, type `text`, then commit (Enter) or cancel (Escape). */
 function editTitleRow(o: Outliner, text: string, key: 'Enter' | 'Escape'): void {
   const el = requireTitleRowText(o)
@@ -133,6 +158,22 @@ describe('title row (opt-in via prefs.titleRow)', () => {
 
     o.loadOpml(opml('<outline text="z"/>').replace('<title>t</title>', '<title>Second</title>'))
     expect(requireTitleRowText(o).textContent).toBe('Second')
+  })
+
+  it('discards an uncommitted edit when a different document loads', () => {
+    const o = mount(opmlTitled('DOC-A', '<outline text="a"/>'))
+    o.prefs({ titleRow: true })
+
+    typeThenLoseFocusWithoutBlur(o, 'TYPED-BY-USER')
+    o.loadOpml(opmlTitled('DOC-B', '<outline text="z"/>'))
+
+    // The pending edit belonged to DOC-A, which is gone. Committing it here
+    // wrote the typed text into DOC-B's head -- and because the load's own
+    // clearChanged() runs afterwards, it did so without marking the document
+    // changed, so the wrong title was invisible until it hit disk on the
+    // next save.
+    expect(o.getTitle()).toBe('DOC-B')
+    expect(requireTitleRowText(o).textContent).toBe('DOC-B')
   })
 
   it('toOpml() is byte-identical whether the row is enabled or disabled', () => {

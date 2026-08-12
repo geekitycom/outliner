@@ -316,6 +316,22 @@ export class Outliner {
   // --- content I/O ----------------------------------------------------------
 
   loadOpml(opml: string | Document, setFocus = true, rawHtml = false): void {
+    // Discard -- never commit -- a title-row edit still in progress. The edit
+    // belongs to the document being replaced, so committing it writes one
+    // document's text into another's head.
+    //
+    // This isn't hypothetical: refresh() commits a session whose focus went
+    // away without a blur (a native Save/Open panel does exactly that), and
+    // xmlToOutline fires the head-change notification the row refreshes from.
+    // The commit therefore landed *after* the new headers were installed,
+    // overwriting the freshly loaded title -- and the load's own
+    // clearChanged() ran afterwards, so it left no dirty marker behind. The
+    // wrong title stayed invisible until the next save wrote it to disk.
+    //
+    // Aborting here rather than inside xmlToOutline is deliberate: redraw()
+    // (render-mode toggle) also goes through xmlToOutline, and there the
+    // document is the *same* one, so there's nothing stale to discard.
+    this.titleRowCtl.abortEdit()
     this.op.xmlToOutline(opml, setFocus, rawHtml)
   }
 
@@ -586,7 +602,9 @@ export class Outliner {
     try {
       const res = await fetch(openUrl, { method: 'POST', body: params })
       const text = await res.text()
-      this.op.xmlToOutline(text)
+      // Through loadOpml(), not op.xmlToOutline() directly, so a remote open
+      // discards a pending title-row edit the same way a local one does.
+      this.loadOpml(text)
     } catch {
       if (this.root.querySelectorAll('.concord-node').length === 0) this.op.wipe()
     }
