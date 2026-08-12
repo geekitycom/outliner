@@ -150,9 +150,19 @@ module-level `currentPath`, a `lastSentDirty` IPC cache, Rust's `DirtyWindows` m
 the OPML head title, and the OS window title. `syncTitle()` reconciles them by hand.
 
 Module-level `let`s plus module-scope Tauri imports make the file untestable — one
-document per test *file*, with no way to reset. `confirmQuit` and `confirmClose`
-are near-duplicates differing only in which side calls `destroy()`; the 23-line doc
-comment on `confirmQuit` is an apology for it.
+document per test *file*, with no way to reset.
+
+> **Correction.** This review originally called `confirmQuit` and `confirmClose`
+> near-duplicates "differing only in which side calls `destroy()`", and proposed
+> making both destroy from the same side so one would disappear. **That is wrong —
+> do not do it.** `confirmQuit` clears the changed flag on the discard path because
+> the window *stays open* through a quit: Rust walks every dirty window and only
+> exits once all are resolved. Skip that and the flow's own `app.exit(0)`
+> re-triggers the `ExitRequested` dirty check, and the app refuses to quit against
+> its own exit call. `confirmClose`'s window is destroyed, so its dirty-map entry
+> drops on its own. The difference is which window survives, and the duplication is
+> earning its keep. The 23-line doc comment explains this rather than apologising
+> for it.
 
 The Save-As heuristic at `document.ts:332` is the tell:
 
