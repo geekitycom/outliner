@@ -6,7 +6,7 @@
 name = "app"
 # Managed by release-please (see release-please-config.json) alongside
 # ../package.json and ../src-tauri/tauri.conf.json. Don't edit by hand.
-version = "0.1.0"
+version = "0.2.0"
 description = "GeekityFlow — a keyboard-driven OPML outliner for the desktop"
 authors = ["Andrew Shell <andrew@andrewshell.org>"]
 license = "GPL-3.0-or-later"
