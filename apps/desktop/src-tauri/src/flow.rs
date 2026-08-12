@@ -232,6 +232,18 @@ impl Windows {
     next.dirty.remove(label);
     next
   }
+
+  /// This snapshot with `label` gone entirely — how the world looks once a
+  /// `Destroy` step has been carried out. The dirty entry goes with it,
+  /// mirroring the `WindowEvent::Destroyed` cleanup the adapter relies on
+  /// (design note 8 in apps/desktop/README.md): a destroyed webview can
+  /// never send a final `set_dirty` of its own.
+  fn destroyed(&self, label: &str) -> Windows {
+    let mut next = self.clone();
+    next.dirty.remove(label);
+    next.live.remove(label);
+    next
+  }
 }
 
 /// The whole flow, as one total function from (state, input, world) to (new
@@ -243,9 +255,31 @@ impl Windows {
 /// answer is "the same thing it held before".
 pub fn advance(pending: Option<&Flow>, input: Input, windows: &Windows) -> Outcome {
   match input {
-    Input::StartQuit => drive(Flow::Quit, windows, Vec::new()),
-    Input::StartCloseGroup { .. } => todo!(),
+    // The re-entrancy guard, in the one place both flows pass through.
+    // Cmd-Q pressed twice — whether the OS re-delivers the keystroke or the
+    // user genuinely presses it again while a prompt from the first press is
+    // still open — must not start a second walk on top of the first, and
+    // neither must Cmd-Q on top of a Close Window walk or the reverse. A
+    // second walk would re-prompt a window that is already showing a prompt.
+    // The running flow is left exactly as it was and nothing happens.
+    Input::StartQuit => match pending {
+      Some(running) => unchanged(running),
+      None => drive(Flow::Quit, windows, Vec::new()),
+    },
+    Input::StartCloseGroup { group } => match pending {
+      Some(running) => unchanged(running),
+      None => drive(Flow::CloseGroup { remaining: group }, windows, Vec::new()),
+    },
     Input::Resolved { label, response } => resolved(pending, &label, response, windows),
+  }
+}
+
+/// A start request that arrived while a flow was already running: keep the
+/// running flow, do nothing.
+fn unchanged(running: &Flow) -> Outcome {
+  Outcome {
+    pending: Some(running.clone()),
+    steps: Vec::new(),
   }
 }
 
@@ -286,8 +320,26 @@ fn resolved(pending: Option<&Flow>, label: &str, response: Response, windows: &W
 
   // The rest of this call has to reason about the world it is itself
   // creating, not the one it was handed: the window that just answered is no
-  // longer dirty, and asking about it again would prompt it forever.
-  drive(flow.clone(), &windows.marked_clean(label), steps)
+  // longer dirty (and, for Close Window, no longer there at all), and asking
+  // about it again would prompt it forever.
+  let windows = match flow {
+    // Quit leaves every window open until the very end — the process exit
+    // itself is what closes them.
+    Flow::Quit => windows.marked_clean(label),
+    Flow::CloseGroup { .. } => {
+      // Close Window's whole point is to actually close each tab, so a tab
+      // that has resolved its prompt is destroyed right here. This is also
+      // why its frontend prompt does not clear its own changed flag the way
+      // the Quit one does: this window is about to stop existing, and its
+      // dirty entry goes with it.
+      steps.push(Step::Destroy {
+        label: label.to_string(),
+      });
+      windows.destroyed(label)
+    }
+  };
+
+  drive(flow.clone(), &windows, steps)
 }
 
 /// Works out the next thing to wait on, appending to `steps` whatever has to
@@ -326,7 +378,50 @@ fn drive(flow: Flow, windows: &Windows, mut steps: Vec<Step>) -> Outcome {
         }
       }
     }
-    Flow::CloseGroup { .. } => todo!(),
+    // The group as it stood the moment Cmd-Shift-W was pressed, walked in
+    // order. The list is never re-queried mid-walk: it came from AppKit once
+    // (see `Input::StartCloseGroup`), and "which tabs did the user ask to
+    // close" is settled at that press, not continuously renegotiated as tabs
+    // come and go.
+    Flow::CloseGroup { mut remaining } => loop {
+      if remaining.is_empty() {
+        // Every tab in the group has been dealt with. Note there is no
+        // `Step::Exit` on this path however many windows are left: Close
+        // Window closes a tab group, and whether the process then goes away
+        // is the OS's own last-window-closed exit to decide.
+        return Outcome { pending: None, steps };
+      }
+      // Taken off the list *before* being acted on, so the answer that comes
+      // back later resumes from the rest rather than re-visiting this one.
+      let label = remaining.remove(0);
+
+      if !windows.is_live(&label) {
+        // Already closed through some other route — its own Close Tab, the
+        // traffic light, or dragged out of the group and closed — between
+        // the group being captured and the walk reaching it. Nothing to
+        // destroy and nobody to ask. Same staleness rule Quit's walk
+        // follows, asked through the same accessor rather than re-derived.
+        continue;
+      }
+
+      if !windows.is_dirty(&label) {
+        // No unsaved work: close it without asking. This is the case that
+        // makes `drive` a loop rather than a single decision — a group of
+        // clean tabs has to close in one go, not one tab per round trip out
+        // through the adapter and back.
+        steps.push(Step::Destroy { label: label.clone() });
+        continue;
+      }
+
+      steps.push(Step::Prompt {
+        label,
+        event: PROMPT_CLOSE_GROUP,
+      });
+      return Outcome {
+        pending: Some(Flow::CloseGroup { remaining }),
+        steps,
+      };
+    },
   }
 }
 
@@ -554,7 +649,10 @@ mod tests {
       response: Response::Proceed,
     });
 
-    assert!(app.exited, "the re-entrant dirty check must let this exit through");
+    assert!(
+      app.exited,
+      "the re-entrant dirty check must let this exit through"
+    );
     assert!(!app.windows().any_dirty());
   }
 
@@ -619,5 +717,194 @@ mod tests {
     }));
     assert!(app.exited);
   }
-}
 
+  /// The re-entrancy trap, and the reason both flows go through one
+  /// function. Cmd-Q pressed twice — whether the OS re-delivers the
+  /// keystroke or the user genuinely presses it again while the first
+  /// press's prompt is still open — must not start a second walk on top of
+  /// the first. A second walk would re-prompt a window that is already
+  /// showing a prompt.
+  #[test]
+  fn a_second_quit_press_does_not_restart_the_walk() {
+    let mut app = App::new(&[("win-1", true), ("win-2", true)], &["win-1", "win-2"]);
+
+    app.send(Input::StartQuit);
+    app.send(Input::StartQuit);
+    app.send(Input::StartQuit);
+
+    assert_eq!(app.prompted(), vec!["win-1"]);
+    assert_eq!(app.pending, Some(Flow::Quit), "the first walk is left running");
+  }
+
+  /// Same guard across the two flows: Close Window pressed during a Quit
+  /// walk, and Quit pressed during a Close Window walk, are both ignored.
+  /// This is the case a second, near-identical copy of the walk would have
+  /// missed — each copy would only have guarded against itself.
+  #[test]
+  fn the_two_flows_do_not_stack_on_each_other() {
+    let mut quitting = App::new(&[("win-1", true)], &["win-1", "win-2"]);
+    quitting.send(Input::StartQuit);
+    quitting.send(Input::StartCloseGroup {
+      group: live(&["win-1", "win-2"]),
+    });
+
+    assert_eq!(quitting.prompted(), vec!["win-1"]);
+    assert_eq!(quitting.pending, Some(Flow::Quit));
+    assert!(!quitting.log.iter().any(|s| matches!(s, Step::Destroy { .. })));
+
+    let mut closing = App::new(&[("win-1", true), ("win-2", true)], &["win-1", "win-2"]);
+    closing.send(Input::StartCloseGroup {
+      group: live(&["win-1"]),
+    });
+    closing.send(Input::StartQuit);
+
+    assert_eq!(closing.prompted(), vec!["win-1"]);
+    assert_eq!(
+      closing.pending,
+      Some(Flow::CloseGroup { remaining: vec![] }),
+      "the close walk is left running, at the point it had reached"
+    );
+    assert!(!closing.log.contains(&Step::Exit));
+  }
+
+  // ---- Close Window (the tab-group walk) ---------------------------------
+
+  /// Clean tabs close without being asked anything, and they close in one
+  /// go rather than one per round trip — the whole group goes in a single
+  /// advance.
+  #[test]
+  fn close_group_destroys_every_clean_tab_without_prompting() {
+    let mut app = App::new(
+      &[("win-1", false), ("win-2", false)],
+      &["win-1", "win-2", "other"],
+    );
+
+    app.send(Input::StartCloseGroup {
+      group: live(&["win-1", "win-2"]),
+    });
+
+    assert!(app.prompted().is_empty());
+    assert_eq!(
+      app.log,
+      vec![
+        Step::Destroy {
+          label: "win-1".to_string()
+        },
+        Step::Destroy {
+          label: "win-2".to_string()
+        },
+      ]
+    );
+    assert_eq!(app.pending, None);
+    // A window outside the group is untouched: Close Window closes a tab
+    // group, not the app.
+    assert_eq!(app.live, vec!["other".to_string()]);
+    assert!(!app.log.contains(&Step::Exit));
+  }
+
+  /// The dirty tab in the middle of a group stops the walk, is prompted with
+  /// Close Window's own event (never Quit's — the frontend does something
+  /// different with each, because a window survives a quit and does not
+  /// survive this), and is destroyed once it answers. The walk then picks up
+  /// from where it left off.
+  #[test]
+  fn close_group_prompts_a_dirty_tab_then_destroys_it_and_carries_on() {
+    let mut app = App::new(
+      &[("win-1", false), ("win-2", true), ("win-3", false)],
+      &["win-1", "win-2", "win-3"],
+    );
+
+    app.send(Input::StartCloseGroup {
+      group: live(&["win-1", "win-2", "win-3"]),
+    });
+
+    assert_eq!(
+      app.log,
+      vec![
+        Step::Destroy {
+          label: "win-1".to_string()
+        },
+        Step::Prompt {
+          label: "win-2".to_string(),
+          event: "menu-close-window-group",
+        },
+      ],
+      "the walk stops at the first dirty tab, with win-3 untouched"
+    );
+    assert!(app.live.contains(&"win-3".to_string()));
+
+    app.send(Input::Resolved {
+      label: "win-2".to_string(),
+      response: Response::Proceed,
+    });
+
+    assert_eq!(app.live, Vec::<String>::new());
+    assert_eq!(app.pending, None);
+    assert!(
+      !app.log.contains(&Step::Exit),
+      "closing a group never quits the app"
+    );
+  }
+
+  /// Cancelling one tab's prompt leaves the rest of the group open — the
+  /// same "abort the whole flow" rule Quit has, and the reason both go
+  /// through one `resolved`.
+  #[test]
+  fn cancelling_one_tab_leaves_the_rest_of_the_group_open() {
+    let mut app = App::new(&[("win-1", true), ("win-2", false)], &["win-1", "win-2"]);
+
+    app.send(Input::StartCloseGroup {
+      group: live(&["win-1", "win-2"]),
+    });
+    app.send(Input::Resolved {
+      label: "win-1".to_string(),
+      response: Response::Cancel,
+    });
+
+    assert_eq!(app.live, vec!["win-1".to_string(), "win-2".to_string()]);
+    assert_eq!(app.pending, None);
+  }
+
+  /// A tab that left the group between the group being captured and the
+  /// walk reaching it — closed through its own Close Tab, or dragged out and
+  /// closed — is stepped over. Nothing to destroy, nobody to ask. This is
+  /// the same staleness rule Quit's walk uses, asked through the same
+  /// accessor rather than re-derived here.
+  #[test]
+  fn close_group_steps_over_a_tab_that_has_already_gone() {
+    let mut app = App::new(&[("win-2", true)], &["win-2"]);
+
+    app.send(Input::StartCloseGroup {
+      group: live(&["win-1", "win-2"]),
+    });
+
+    assert_eq!(
+      app.log,
+      vec![Step::Prompt {
+        label: "win-2".to_string(),
+        event: "menu-close-window-group",
+      }],
+      "win-1 is gone: no destroy, no prompt"
+    );
+  }
+
+  /// Closing the last group leaves the app running with no windows: Close
+  /// Window never exits by itself. Whether the process then goes away is
+  /// the OS's "last window closed" exit, which `ExitRequested` handles on
+  /// its own terms — and by then nothing live is dirty.
+  #[test]
+  fn close_group_never_exits_the_app_itself() {
+    let mut app = App::new(&[("win-1", true)], &["win-1"]);
+
+    app.send(Input::StartCloseGroup {
+      group: live(&["win-1"]),
+    });
+    app.send(Input::Resolved {
+      label: "win-1".to_string(),
+      response: Response::Proceed,
+    });
+
+    assert!(!app.log.contains(&Step::Exit));
+    assert!(!app.windows().any_dirty());
+  }
+}
