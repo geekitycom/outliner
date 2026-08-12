@@ -16,6 +16,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2.6.3", features = [] }
+# build.rs validates ../menu.json before the crate compiles, so a malformed or
+# self-inconsistent manifest is a build failure rather than a menu item that
+# renders fine and silently does nothing. Deliberately used through
+# serde_json::Value rather than the crate's own MenuManifest structs — an
+# independent reading of the file is the only kind that can disagree with the
+# one src/lib.rs performs.
+serde_json = "1.0"
 
 [dependencies]
 serde_json = "1.0"

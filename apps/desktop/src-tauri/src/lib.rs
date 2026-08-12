@@ -6,7 +6,7 @@
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::webview::WebviewWindowBuilder;
 use tauri::{Emitter, Manager, WebviewUrl};
@@ -707,6 +707,146 @@ fn close_window_group(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
   advance_flow(app);
 }
 
+/// The shared menu manifest, embedded at compile time.
+///
+/// `include_str!` rather than a runtime read for two reasons. The obvious one
+/// is that a bundled `.app` has no `menu.json` sitting next to it to read. The
+/// one that matters more: this file is the *only* copy of every custom menu
+/// item's id, and it is read by two languages that cannot check each other —
+/// Rust builds the menu from it, TypeScript listens for the events it implies.
+/// Embedding it means the Rust half of that pair is settled when the binary is
+/// compiled, and `build.rs` (which validates the same file, independently and
+/// from raw JSON) turns a malformed or self-inconsistent manifest into a build
+/// failure rather than a menu that silently does nothing when clicked.
+static MENU_MANIFEST_JSON: &str = include_str!("../../menu.json");
+
+/// The manifest's root. Not `deny_unknown_fields`, unlike the two structs
+/// below: the file carries a `$comment` array of prose explaining itself to
+/// whoever opens it next, which no consumer reads and neither consumer should
+/// have to declare.
+#[derive(Debug, serde::Deserialize)]
+struct MenuManifest {
+  submenus: Vec<SubmenuSpec>,
+  items: Vec<MenuItemSpec>,
+}
+
+/// One submenu that holds custom items. Edit and Window have no entry here —
+/// every item in them is predefined (see `build_menu`).
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SubmenuSpec {
+  /// Referenced by each item's `submenu` field, and by `build_menu` when it
+  /// asks for a submenu's items.
+  key: String,
+  /// What the menu bar draws, and what the Help ▸ Keyboard Shortcuts sheet
+  /// titles this submenu's group with on the TypeScript side.
+  title: String,
+}
+
+/// One custom menu item.
+///
+/// `deny_unknown_fields` is deliberate and load-bearing: without it a
+/// misspelled `"acclerator"` would deserialize happily into an item with no
+/// accelerator at all, which is precisely the class of silent failure this
+/// manifest exists to eliminate. A typo here should stop the build, and with
+/// this attribute it does — `build.rs` parses the same file into these same
+/// rules before the crate compiles.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct MenuItemSpec {
+  /// Both the menu item's id and, prefixed with `menu-`, the event name it
+  /// dispatches to the focused window — see `menu_event_name`.
+  id: String,
+  label: String,
+  /// Absent for the menu-only items (every Outliner item but Find…/Find
+  /// again, plus Delete Line and Sort in Reorg). See `build_menu` for why
+  /// each of those deliberately has no key equivalent.
+  #[serde(default)]
+  accelerator: Option<String>,
+  submenu: String,
+  /// Draw a separator above this item. The grouping *is* part of the menu's
+  /// meaning (File groups "which window" above "which document"; Reorg mirrors
+  /// Drummer's grouping exactly), so it belongs in the manifest with the item
+  /// rather than as a positional call left behind in this file.
+  #[serde(default)]
+  separator_before: bool,
+  /// What this item does, in the Help ▸ Keyboard Shortcuts sheet's voice.
+  /// Read only by the TypeScript side (`src/shortcuts.ts`); parsed here so
+  /// that `deny_unknown_fields` above can do its job, and so a missing
+  /// description fails the Rust build too rather than only the frontend's.
+  #[allow(dead_code)]
+  description: String,
+}
+
+/// The parsed manifest. Parsed once, on first use.
+///
+/// `expect` rather than a fallible return: the same bytes were already parsed
+/// and validated by `build.rs` before this crate compiled, so reaching the
+/// panic would mean the embedded string differs from the one the build script
+/// read — impossible without editing the binary. A menu that fails loudly at
+/// startup is in any case the right outcome; a menu that half-builds is the
+/// failure mode worth avoiding.
+fn menu_manifest() -> &'static MenuManifest {
+  static MANIFEST: OnceLock<MenuManifest> = OnceLock::new();
+  MANIFEST.get_or_init(|| {
+    serde_json::from_str(MENU_MANIFEST_JSON).expect("menu.json is not a valid menu manifest")
+  })
+}
+
+/// The event a custom menu item dispatches to the focused window.
+///
+/// This one function is the whole contract between the two languages: Rust
+/// emits `menu_event_name(id)`, `src/actions.ts` listens for the identical
+/// string built the identical way from the identical manifest. It used to be
+/// 23 hand-written `emit_to(label, "menu-...")` calls facing 23 hand-written
+/// `listen('menu-...')` calls, where a single mistyped character on either
+/// side produced no compile error, no runtime error, and a menu item that
+/// quietly did nothing.
+fn menu_event_name(id: &str) -> String {
+  format!("menu-{id}")
+}
+
+/// The manifest title for a submenu key.
+///
+/// Panics only if `build_menu` asks for a key the manifest doesn't define,
+/// which `build.rs` rejects at compile time (it checks the exact set of keys
+/// this file builds submenus for), so the message is for whoever adds a sixth
+/// submenu to `build_menu` without adding it to the manifest first.
+fn submenu_title(key: &str) -> &'static str {
+  menu_manifest()
+    .submenus
+    .iter()
+    .find(|s| s.key == key)
+    .map(|s| s.title.as_str())
+    .unwrap_or_else(|| panic!("menu.json defines no submenu named {key}"))
+}
+
+/// Appends one submenu's manifest items, in manifest order, to a builder.
+///
+/// Takes an already-started builder rather than making its own, because the
+/// app submenu interleaves: About/Services/Hide/... are predefined and come
+/// first, and only Quit is a custom item. Separators come from each item's
+/// `separatorBefore`, so the whole of a submenu's shape — order, grouping,
+/// labels, accelerators — is data in `menu.json`, and the code here reduces to
+/// "build what the manifest says."
+fn add_manifest_items<'m>(
+  mut builder: SubmenuBuilder<'m, tauri::Wry, tauri::AppHandle>,
+  app: &tauri::AppHandle,
+  submenu_key: &str,
+) -> tauri::Result<SubmenuBuilder<'m, tauri::Wry, tauri::AppHandle>> {
+  for spec in menu_manifest().items.iter().filter(|i| i.submenu == submenu_key) {
+    if spec.separator_before {
+      builder = builder.separator();
+    }
+    let mut item = MenuItemBuilder::with_id(&spec.id, &spec.label);
+    if let Some(accelerator) = &spec.accelerator {
+      item = item.accelerator(accelerator);
+    }
+    builder = builder.item(&item.build(app)?);
+  }
+  Ok(builder)
+}
+
 /// Builds the app-wide menu. This lives in Rust, not JS: a JS menu's
 /// `action` callbacks run in the webview that *created* the menu, which
 /// with several windows open is the wrong window for anything document-
@@ -723,11 +863,19 @@ fn close_window_group(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
 /// through *several* windows in turn; see their own doc comments below,
 /// `advance_flow`, and `close_window_group`.
 fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-  // Custom item, NOT the predefined `.quit()`, even though every other
-  // native item in this submenu is predefined. The predefined Quit item
-  // maps to Cocoa's `sel!(terminate:)` (muda's macOS backend), which sends
-  // `terminate:` straight to NSApplication — and nothing in this app, or in
-  // tao underneath it, ever gets a chance to intervene first (verified
+  // Every custom item below comes from menu.json (see MENU_MANIFEST_JSON
+  // above): its id, label, accelerator, order within its submenu, and which
+  // separators group it. What stays here is what the manifest can't express —
+  // which submenus exist at all, where the *predefined* native items sit
+  // among the custom ones, and the reasoning behind both. Adding a menu item
+  // is now an edit to menu.json plus a handler in src/actions.ts; nothing in
+  // this function changes.
+  //
+  // Quit is a custom item, NOT the predefined `.quit()`, even though every
+  // other native item in the app submenu is predefined. The predefined Quit
+  // item maps to Cocoa's `sel!(terminate:)` (muda's macOS backend), which
+  // sends `terminate:` straight to NSApplication — and nothing in this app, or
+  // in tao underneath it, ever gets a chance to intervene first (verified
   // against tao 0.35.3's source: there is no `applicationShouldTerminate`
   // handler anywhere in it). That means Tauri's `RunEvent::ExitRequested` —
   // the hook the "just add ExitRequested + prevent_exit()" fix relies on —
@@ -736,82 +884,53 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
   // Rust-side event handling can catch it after the fact. A *custom* item
   // does emit a menu event, routed through on_menu_event below like every
   // other custom item here, which is what keeps Cmd-Q inside code this app
-  // controls. Do not "simplify" this back to `.quit()` — see the "Quit"
-  // design note in README.md first.
-  let quit_item = MenuItemBuilder::with_id("quit", "Quit GeekityFlow")
-    .accelerator("CmdOrCtrl+Q")
-    .build(app)?;
-
-  let app_submenu = SubmenuBuilder::new(app, "GeekityFlow")
-    .about(None)
-    .separator()
-    .services()
-    .separator()
-    .hide()
-    .hide_others()
-    .show_all()
-    .separator()
-    .item(&quit_item)
-    .build()?;
+  // controls. Do not "simplify" the "quit" entry in menu.json into a
+  // `.quit()` call here — see the "Quit" design note in README.md first.
+  let app_submenu = add_manifest_items(
+    SubmenuBuilder::new(app, submenu_title("app"))
+      .about(None)
+      .separator()
+      .services()
+      .separator()
+      .hide()
+      .hide_others()
+      .show_all(),
+    app,
+    "app",
+  )?
+  .build()?;
 
   // Cmd-N/O/S/Shift-S/Shift-N/Shift-W are all safe accelerators: they're
   // absent from CONCORD_KEYSTROKES (packages/outliner/src/util.ts) — which
   // has no Shift-modified entries at all — so the outliner's keydown
   // handler falls into its `default:` branch and never calls
-  // preventDefault. Nothing here shadows an outliner keystroke.
-  let new_item = MenuItemBuilder::with_id("new", "New")
-    .accelerator("CmdOrCtrl+N")
-    .build(app)?;
-  let open_item = MenuItemBuilder::with_id("open", "Open…")
-    .accelerator("CmdOrCtrl+O")
-    .build(app)?;
-  let new_window_item = MenuItemBuilder::with_id("new-window", "New Window")
-    .accelerator("CmdOrCtrl+Shift+N")
-    .build(app)?;
-  // Custom, unlike Close Tab below: closing every tab in the focused
-  // window's *group* needs Rust-side orchestration (AppKit's
-  // tabbedWindows, then the same one-at-a-time unsaved-changes walk Quit
-  // uses) that no predefined item can do — see close_window_group's doc
-  // comment, reached from the "close-window" branch in on_menu_event
-  // below.
-  // Custom rather than the predefined "close window" role with its text
-  // changed, which is what this used to be. AppKit draws that predefined
-  // role with a leading ✕ glyph, and a single item carrying an image makes
-  // NSMenu reserve an image column for its whole group — indenting the
-  // neighbouring items' text and leaving the File menu visibly ragged.
-  // A custom item carries no image, so the column disappears.
+  // preventDefault. Nothing in the File menu shadows an outliner keystroke.
   //
-  // Losing the predefined role means losing its automatic responder-chain
-  // routing, so this is routed like every other custom item (see
-  // on_menu_event) — but it deliberately calls Tauri's `close()`, not
-  // `destroy()`. `close()` requests a close, which fires the same
-  // `close-requested` event the red traffic-light button does, so both
-  // routes still funnel through the single unsaved-changes guard in
-  // main.ts and the frontend needs no new listener at all.
-  let close_tab_item = MenuItemBuilder::with_id("close-tab", "Close Tab")
-    .accelerator("CmdOrCtrl+W")
-    .build(app)?;
-  let close_window_item = MenuItemBuilder::with_id("close-window", "Close Window")
-    .accelerator("CmdOrCtrl+Shift+W")
-    .build(app)?;
-  let save_item = MenuItemBuilder::with_id("save", "Save")
-    .accelerator("CmdOrCtrl+S")
-    .build(app)?;
-  let save_as_item = MenuItemBuilder::with_id("save-as", "Save As…")
-    .accelerator("CmdOrCtrl+Shift+S")
-    .build(app)?;
-
-  let file_submenu = SubmenuBuilder::new(app, "File")
-    .item(&new_item)
-    .item(&open_item)
-    .separator()
-    .item(&new_window_item)
-    .item(&close_tab_item)
-    .item(&close_window_item)
-    .separator()
-    .item(&save_item)
-    .item(&save_as_item)
-    .build()?;
+  // Close Window is custom because closing every tab in the focused window's
+  // *group* needs Rust-side orchestration (AppKit's tabbedWindows, then the
+  // same one-at-a-time unsaved-changes walk Quit uses) that no predefined item
+  // can do — see close_window_group's doc comment, reached from the
+  // "close-window" branch in on_menu_event below.
+  //
+  // Close Tab is custom for an unrelated reason: it used to be the predefined
+  // "close window" role with its text changed, and AppKit draws that role with
+  // a leading ✕ glyph. A single item carrying an image makes NSMenu reserve an
+  // image column for its whole group — indenting the neighbouring items' text
+  // and leaving the File menu visibly ragged. A custom item carries no image,
+  // so the column disappears. Losing the predefined role means losing its
+  // automatic responder-chain routing, so it's routed like every other custom
+  // item (see on_menu_event) — but it deliberately calls Tauri's `close()`,
+  // not `destroy()`. `close()` requests a close, which fires the same
+  // `close-requested` event the red traffic-light button does, so both routes
+  // still funnel through the single unsaved-changes guard in main.ts and the
+  // frontend needs no new listener at all.
+  //
+  // The separator placement in menu.json is deliberate too: Save/Save As sit
+  // *below* the two Close items, because New/Open/New Window/Close Tab/Close
+  // Window are all about which tab or window you're looking at while Save/Save
+  // As are about that tab's document — the menu groups by "which window"
+  // before "which document."
+  let file_submenu = add_manifest_items(SubmenuBuilder::new(app, submenu_title("file")), app, "file")?.build()?;
 
   // Cut/Copy/Paste ONLY — do not add Undo or Select All here. On macOS the
   // app menu gets first crack at a key equivalent, and both Cmd-Z (`undo`)
@@ -826,12 +945,11 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
   // menu items present to work at all.
   let edit_submenu = SubmenuBuilder::new(app, "Edit").cut().copy().paste().build()?;
 
-  // No accelerator. The obvious Cmd-/ is already bound to `run-selection`
-  // in the outliner (CONCORD_KEYSTROKES) — giving this item Cmd-/ would
-  // shadow that keystroke the same way an Edit-menu Undo would shadow
-  // Cmd-Z.
-  let shortcuts_item = MenuItemBuilder::with_id("keyboard-shortcuts", "Keyboard Shortcuts").build(app)?;
-  let help_submenu = SubmenuBuilder::new(app, "Help").item(&shortcuts_item).build()?;
+  // Keyboard Shortcuts has no accelerator in menu.json. The obvious Cmd-/ is
+  // already bound to `run-selection` in the outliner (CONCORD_KEYSTROKES) —
+  // giving this item Cmd-/ would shadow that keystroke the same way an
+  // Edit-menu Undo would shadow Cmd-Z.
+  let help_submenu = add_manifest_items(SubmenuBuilder::new(app, submenu_title("help")), app, "help")?.build()?;
 
   // Modeled on Dave Winer's Drummer (drummer.land) Outliner menu, not
   // classic Mac MORE's View menu this used to mirror. Grouped the way
@@ -862,21 +980,7 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
   // preventDefault — so the accelerator was already free, and is now
   // backed by a real implementation (find.ts). Cmd-G (`meta-G`) is absent
   // from CONCORD_KEYSTROKES entirely, so it shadows nothing either.
-  let expand_item = MenuItemBuilder::with_id("expand", "Expand").build(app)?;
-  let expand_all_subs_item = MenuItemBuilder::with_id("expand-all-subs", "Expand All Subs").build(app)?;
-  let expand_everything_item = MenuItemBuilder::with_id("expand-everything", "Expand Everything").build(app)?;
-  let collapse_item = MenuItemBuilder::with_id("collapse", "Collapse").build(app)?;
-  let collapse_everything_item =
-    MenuItemBuilder::with_id("collapse-everything", "Collapse Everything").build(app)?;
-  let hoist_item = MenuItemBuilder::with_id("hoist", "Hoist").build(app)?;
-  let dehoist_item = MenuItemBuilder::with_id("dehoist", "Dehoist").build(app)?;
-  let find_item = MenuItemBuilder::with_id("find", "Find…")
-    .accelerator("CmdOrCtrl+F")
-    .build(app)?;
-  let find_again_item = MenuItemBuilder::with_id("find-again", "Find again")
-    .accelerator("CmdOrCtrl+G")
-    .build(app)?;
-
+  //
   // Drummer greys out items that don't apply to the current state (e.g.
   // Dehoist when nothing is hoisted). Reproducing that here would need a
   // frontend round trip on every cursor move just to ask "is isHoisted()
@@ -884,20 +988,8 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
   // harmlessly when they don't apply (see their doc comments in
   // packages/outliner/src/outliner.ts), so clicking a greyed-out-in-Drummer
   // item here is a harmless no-op instead.
-  let outliner_submenu = SubmenuBuilder::new(app, "Outliner")
-    .item(&expand_item)
-    .item(&expand_all_subs_item)
-    .item(&expand_everything_item)
-    .separator()
-    .item(&collapse_item)
-    .item(&collapse_everything_item)
-    .separator()
-    .item(&hoist_item)
-    .item(&dehoist_item)
-    .separator()
-    .item(&find_item)
-    .item(&find_again_item)
-    .build()?;
+  let outliner_submenu =
+    add_manifest_items(SubmenuBuilder::new(app, submenu_title("outliner")), app, "outliner")?.build()?;
 
   // Modeled on Dave Winer's Drummer (drummer.land) Reorg menu, accelerators
   // included — this is the one custom submenu in this app that binds
@@ -921,49 +1013,7 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::
   // menu item there would invoke the webview's native undo/select-all
   // instead of the outliner's own, actually changing behavior — which is
   // also why the Edit menu above still must not add them.
-  let reorg_move_up_item = MenuItemBuilder::with_id("reorg-move-up", "Move Up")
-    .accelerator("CmdOrCtrl+U")
-    .build(app)?;
-  let reorg_move_down_item = MenuItemBuilder::with_id("reorg-move-down", "Move Down")
-    .accelerator("CmdOrCtrl+D")
-    .build(app)?;
-  let reorg_move_left_item = MenuItemBuilder::with_id("reorg-move-left", "Move Left")
-    .accelerator("CmdOrCtrl+L")
-    .build(app)?;
-  let reorg_move_right_item = MenuItemBuilder::with_id("reorg-move-right", "Move Right")
-    .accelerator("CmdOrCtrl+R")
-    .build(app)?;
-  let reorg_toggle_comment_item = MenuItemBuilder::with_id("reorg-toggle-comment", "Toggle comment")
-    .accelerator("CmdOrCtrl+\\")
-    .build(app)?;
-  let reorg_run_selection_item = MenuItemBuilder::with_id("reorg-run-selection", "Run selection")
-    .accelerator("CmdOrCtrl+/")
-    .build(app)?;
-  let reorg_delete_line_item = MenuItemBuilder::with_id("reorg-delete-line", "Delete Line").build(app)?;
-  let reorg_promote_item = MenuItemBuilder::with_id("reorg-promote", "Promote")
-    .accelerator("CmdOrCtrl+[")
-    .build(app)?;
-  let reorg_demote_item = MenuItemBuilder::with_id("reorg-demote", "Demote")
-    .accelerator("CmdOrCtrl+]")
-    .build(app)?;
-  let reorg_sort_item = MenuItemBuilder::with_id("reorg-sort", "Sort").build(app)?;
-
-  let reorg_submenu = SubmenuBuilder::new(app, "Reorg")
-    .item(&reorg_move_up_item)
-    .item(&reorg_move_down_item)
-    .item(&reorg_move_left_item)
-    .item(&reorg_move_right_item)
-    .separator()
-    .item(&reorg_toggle_comment_item)
-    .item(&reorg_run_selection_item)
-    .separator()
-    .item(&reorg_delete_line_item)
-    .separator()
-    .item(&reorg_promote_item)
-    .item(&reorg_demote_item)
-    .separator()
-    .item(&reorg_sort_item)
-    .build()?;
+  let reorg_submenu = add_manifest_items(SubmenuBuilder::new(app, submenu_title("reorg")), app, "reorg")?.build()?;
 
   // Minimize/Zoom are the two predefined items every native macOS app's
   // Window menu starts with; everything below them — Select Next/Previous
@@ -1107,91 +1157,30 @@ pub fn run() {
         };
         let label = window.label().to_string();
 
-        // These act on a specific document's state (dirty flag, current
-        // path, outliner contents), which only that window's frontend
-        // knows. emit_to (never plain emit) targets just the focused
-        // window's label — a broadcast emit would fire in every open
-        // window at once, e.g. saving every open document simultaneously
-        // when the user meant to save just the one in front of them.
-        match id {
-          "open" => {
-            let _ = app.emit_to(label, "menu-open", ());
-          }
-          "save" => {
-            let _ = app.emit_to(label, "menu-save", ());
-          }
-          "save-as" => {
-            let _ = app.emit_to(label, "menu-save-as", ());
-          }
-          "keyboard-shortcuts" => {
-            let _ = app.emit_to(label, "menu-keyboard-shortcuts", ());
-          }
-          // Outliner menu — same routing rationale as above: these
-          // read/mutate one document's outliner state (expansion, hoist
-          // stack, search), so they must land on just the focused window's
-          // label, never broadcast.
-          "expand" => {
-            let _ = app.emit_to(label, "menu-expand", ());
-          }
-          "expand-all-subs" => {
-            let _ = app.emit_to(label, "menu-expand-all-subs", ());
-          }
-          "expand-everything" => {
-            let _ = app.emit_to(label, "menu-expand-everything", ());
-          }
-          "collapse" => {
-            let _ = app.emit_to(label, "menu-collapse", ());
-          }
-          "collapse-everything" => {
-            let _ = app.emit_to(label, "menu-collapse-everything", ());
-          }
-          "hoist" => {
-            let _ = app.emit_to(label, "menu-hoist", ());
-          }
-          "dehoist" => {
-            let _ = app.emit_to(label, "menu-dehoist", ());
-          }
-          "find" => {
-            let _ = app.emit_to(label, "menu-find", ());
-          }
-          "find-again" => {
-            let _ = app.emit_to(label, "menu-find-again", ());
-          }
-          // Reorg menu — same focused-window-only routing as the Outliner
-          // menu above; see build_menu's reorg_submenu doc comment for why
-          // these are the one submenu here that binds accelerators that
-          // shadow the outliner's own keydown handling.
-          "reorg-move-up" => {
-            let _ = app.emit_to(label, "menu-reorg-move-up", ());
-          }
-          "reorg-move-down" => {
-            let _ = app.emit_to(label, "menu-reorg-move-down", ());
-          }
-          "reorg-move-left" => {
-            let _ = app.emit_to(label, "menu-reorg-move-left", ());
-          }
-          "reorg-move-right" => {
-            let _ = app.emit_to(label, "menu-reorg-move-right", ());
-          }
-          "reorg-toggle-comment" => {
-            let _ = app.emit_to(label, "menu-reorg-toggle-comment", ());
-          }
-          "reorg-run-selection" => {
-            let _ = app.emit_to(label, "menu-reorg-run-selection", ());
-          }
-          "reorg-delete-line" => {
-            let _ = app.emit_to(label, "menu-reorg-delete-line", ());
-          }
-          "reorg-promote" => {
-            let _ = app.emit_to(label, "menu-reorg-promote", ());
-          }
-          "reorg-demote" => {
-            let _ = app.emit_to(label, "menu-reorg-demote", ());
-          }
-          "reorg-sort" => {
-            let _ = app.emit_to(label, "menu-reorg-sort", ());
-          }
-          _ => {}
+        // Everything else — every custom item in menu.json that wasn't
+        // intercepted above — acts on a specific document's state (dirty
+        // flag, current path, outliner contents, search), which only that
+        // window's frontend knows. So each is a single event emitted to the
+        // window the user is looking at, and the branch that used to be 23
+        // `"reorg-move-up" => emit_to(label, "menu-reorg-move-up", ())` arms
+        // — identical to each other in every respect but the string, and each
+        // an opportunity to mistype the `menu-` prefix or the id into a menu
+        // item that silently did nothing — is now the one call below.
+        //
+        // emit_to (never plain emit) targets just the focused window's label.
+        // A broadcast emit would fire in every open window at once, e.g.
+        // saving every open document simultaneously when the user meant to
+        // save just the one in front of them. That is not a hypothetical: an
+        // `Any`-kind listener on the frontend once had exactly that effect
+        // (see the listen() comment in src/main.ts).
+        //
+        // Guarded on the manifest rather than emitting for whatever id turns
+        // up, so this can never invent an event name for an id no menu item
+        // has. Predefined items (Cut/Copy/Paste, About, Minimize, ...) are
+        // routed by macOS through the responder chain and don't reach here at
+        // all; anything else that did would be a bug worth not papering over.
+        if menu_manifest().items.iter().any(|item| item.id == id) {
+          let _ = app.emit_to(label, &menu_event_name(id), ());
         }
       });
 
@@ -1276,4 +1265,273 @@ pub fn run() {
         }
       }
     });
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  // These tests exist because the menu manifest (../menu.json) is read by two
+  // languages that can't check each other: Rust builds the menu from it and
+  // TypeScript listens for the events it implies. Nothing in either compiler
+  // notices when a manifest entry drifts — a wrong id still builds, still
+  // dispatches, and simply does nothing when clicked, which is exactly the
+  // silent failure this whole manifest exists to make impossible.
+  //
+  // Every expectation below is written out as a literal transcribed from the
+  // hand-written `build_menu`/`on_menu_event` code the manifest replaced,
+  // never recomputed from the manifest itself. Reading the answer back out of
+  // the thing under test would make these pass by construction and catch no
+  // drift at all.
+
+  /// The five ids `on_menu_event` intercepts before the generic dispatch,
+  /// transcribed from that `if` chain.
+  ///
+  /// Each acts on *windows* rather than on one document's contents — New and
+  /// New Window create one, Close Tab and Close Window close one or a group of
+  /// them, Quit walks every dirty window app-wide — so none of them is a
+  /// matter of emitting an event to the focused window and letting its
+  /// frontend answer. They stay explicit per-item branches in `on_menu_event`
+  /// because each does something genuinely different; this list is what lets
+  /// the tests below tie those branches back to real manifest entries.
+  const ROUTED_BEFORE_DISPATCH: &[&str] = &["new", "new-window", "close-tab", "close-window", "quit"];
+
+  /// The whole custom menu as it was built by hand before the manifest:
+  /// (submenu key, id, label, accelerator, separator before this item).
+  /// Predefined native items (About/Services/Hide/Cut/Copy/Paste/Minimize/
+  /// Zoom, and everything macOS appends to the Window menu) are deliberately
+  /// absent — the manifest covers custom items only, since those are the ones
+  /// this app has to route itself.
+  const EXPECTED_ITEMS: &[(&str, &str, Option<&str>, Option<&str>, bool)] = &[
+    ("app", "quit", Some("Quit GeekityFlow"), Some("CmdOrCtrl+Q"), true),
+    ("file", "new", Some("New"), Some("CmdOrCtrl+N"), false),
+    ("file", "open", Some("Open…"), Some("CmdOrCtrl+O"), false),
+    (
+      "file",
+      "new-window",
+      Some("New Window"),
+      Some("CmdOrCtrl+Shift+N"),
+      true,
+    ),
+    ("file", "close-tab", Some("Close Tab"), Some("CmdOrCtrl+W"), false),
+    (
+      "file",
+      "close-window",
+      Some("Close Window"),
+      Some("CmdOrCtrl+Shift+W"),
+      false,
+    ),
+    ("file", "save", Some("Save"), Some("CmdOrCtrl+S"), true),
+    (
+      "file",
+      "save-as",
+      Some("Save As…"),
+      Some("CmdOrCtrl+Shift+S"),
+      false,
+    ),
+    ("outliner", "expand", Some("Expand"), None, false),
+    ("outliner", "expand-all-subs", Some("Expand All Subs"), None, false),
+    (
+      "outliner",
+      "expand-everything",
+      Some("Expand Everything"),
+      None,
+      false,
+    ),
+    ("outliner", "collapse", Some("Collapse"), None, true),
+    (
+      "outliner",
+      "collapse-everything",
+      Some("Collapse Everything"),
+      None,
+      false,
+    ),
+    ("outliner", "hoist", Some("Hoist"), None, true),
+    ("outliner", "dehoist", Some("Dehoist"), None, false),
+    ("outliner", "find", Some("Find…"), Some("CmdOrCtrl+F"), true),
+    (
+      "outliner",
+      "find-again",
+      Some("Find again"),
+      Some("CmdOrCtrl+G"),
+      false,
+    ),
+    ("reorg", "reorg-move-up", Some("Move Up"), Some("CmdOrCtrl+U"), false),
+    (
+      "reorg",
+      "reorg-move-down",
+      Some("Move Down"),
+      Some("CmdOrCtrl+D"),
+      false,
+    ),
+    (
+      "reorg",
+      "reorg-move-left",
+      Some("Move Left"),
+      Some("CmdOrCtrl+L"),
+      false,
+    ),
+    (
+      "reorg",
+      "reorg-move-right",
+      Some("Move Right"),
+      Some("CmdOrCtrl+R"),
+      false,
+    ),
+    (
+      "reorg",
+      "reorg-toggle-comment",
+      Some("Toggle comment"),
+      Some("CmdOrCtrl+\\"),
+      true,
+    ),
+    (
+      "reorg",
+      "reorg-run-selection",
+      Some("Run selection"),
+      Some("CmdOrCtrl+/"),
+      false,
+    ),
+    ("reorg", "reorg-delete-line", Some("Delete Line"), None, true),
+    ("reorg", "reorg-promote", Some("Promote"), Some("CmdOrCtrl+["), true),
+    ("reorg", "reorg-demote", Some("Demote"), Some("CmdOrCtrl+]"), false),
+    ("reorg", "reorg-sort", Some("Sort"), None, true),
+    (
+      "help",
+      "keyboard-shortcuts",
+      Some("Keyboard Shortcuts"),
+      None,
+      false,
+    ),
+  ];
+
+  #[test]
+  fn the_manifest_describes_the_menu_that_used_to_be_hand_written() {
+    let actual: Vec<(&str, &str, Option<&str>, Option<&str>, bool)> = menu_manifest()
+      .items
+      .iter()
+      .map(|item| {
+        (
+          item.submenu.as_str(),
+          item.id.as_str(),
+          Some(item.label.as_str()),
+          item.accelerator.as_deref(),
+          item.separator_before,
+        )
+      })
+      .collect();
+
+    assert_eq!(actual, EXPECTED_ITEMS);
+  }
+
+  #[test]
+  fn the_manifest_names_its_submenus_in_menu_bar_order() {
+    // Edit and Window are absent on purpose: neither has a single custom item
+    // (Cut/Copy/Paste and Minimize/Zoom are all predefined), so neither needs
+    // an entry here. `build_menu` still orders the menu bar itself, slotting
+    // Edit between File and Outliner and Window between Reorg and Help.
+    let actual: Vec<(&str, &str)> = menu_manifest()
+      .submenus
+      .iter()
+      .map(|s| (s.key.as_str(), s.title.as_str()))
+      .collect();
+
+    assert_eq!(
+      actual,
+      vec![
+        ("app", "GeekityFlow"),
+        ("file", "File"),
+        ("outliner", "Outliner"),
+        ("reorg", "Reorg"),
+        ("help", "Help"),
+      ]
+    );
+  }
+
+  #[test]
+  fn every_dispatched_item_emits_the_event_its_listener_expects() {
+    // The 23 event names the deleted `match` arms in `on_menu_event` emitted,
+    // one per arm, transcribed from that code — and matching, name for name,
+    // the `appWindow.listen` calls in src/main.ts. This is the assertion that
+    // makes the collapse to a single `format!("menu-{id}")` branch safe: get
+    // the prefix or an id wrong and the menu item silently does nothing at
+    // runtime, with nothing else anywhere to catch it.
+    let expected = vec![
+      "menu-open",
+      "menu-save",
+      "menu-save-as",
+      "menu-expand",
+      "menu-expand-all-subs",
+      "menu-expand-everything",
+      "menu-collapse",
+      "menu-collapse-everything",
+      "menu-hoist",
+      "menu-dehoist",
+      "menu-find",
+      "menu-find-again",
+      "menu-reorg-move-up",
+      "menu-reorg-move-down",
+      "menu-reorg-move-left",
+      "menu-reorg-move-right",
+      "menu-reorg-toggle-comment",
+      "menu-reorg-run-selection",
+      "menu-reorg-delete-line",
+      "menu-reorg-promote",
+      "menu-reorg-demote",
+      "menu-reorg-sort",
+      "menu-keyboard-shortcuts",
+    ];
+
+    let actual: Vec<String> = menu_manifest()
+      .items
+      .iter()
+      .filter(|item| !ROUTED_BEFORE_DISPATCH.contains(&item.id.as_str()))
+      .map(|item| menu_event_name(&item.id))
+      .collect();
+
+    assert_eq!(actual, expected);
+  }
+
+  #[test]
+  fn the_five_items_routed_in_rust_are_all_real_menu_items() {
+    // New/New Window/Close Tab/Close Window/Quit never reach the dispatch
+    // branch — each is intercepted earlier in `on_menu_event` because it acts
+    // on windows rather than on one document's contents. They're still menu
+    // items, so a typo in one of those `if id == "..."` comparisons would
+    // leave a real menu item doing nothing; this ties them back to the
+    // manifest so the typo fails here instead.
+    for id in ROUTED_BEFORE_DISPATCH {
+      assert!(
+        menu_manifest().items.iter().any(|item| item.id == *id),
+        "{id} is routed in on_menu_event but is not a menu item"
+      );
+    }
+  }
+
+  #[test]
+  fn every_item_id_is_unique_and_safe_to_paste_into_an_event_name() {
+    // Ids are concatenated into an event name (`menu-{id}`) and into nothing
+    // else, so the only constraints are uniqueness and that the result stays
+    // a plain lowercase-kebab identifier — no spaces or punctuation that
+    // would make the emitted name unmatchable by the listener side.
+    let mut seen: Vec<&str> = Vec::new();
+    for item in &menu_manifest().items {
+      assert!(!seen.contains(&item.id.as_str()), "duplicate menu id: {}", item.id);
+      seen.push(&item.id);
+      assert!(
+        item
+          .id
+          .chars()
+          .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+        "menu id is not lowercase kebab-case: {}",
+        item.id
+      );
+      assert!(
+        menu_manifest().submenus.iter().any(|s| s.key == item.submenu),
+        "{} belongs to unknown submenu {}",
+        item.id,
+        item.submenu
+      );
+    }
+  }
 }

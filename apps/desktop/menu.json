@@ -1,0 +1,246 @@
+{
+  "$comment": [
+    "The app's custom menu items, in one place, read by BOTH languages: Rust builds the",
+    "menu from it (build_menu in src-tauri/src/lib.rs, via include_str! + serde) and",
+    "TypeScript both handles the events it implies (src/actions.ts) and documents its",
+    "accelerators (src/shortcuts.ts). Every item used to be written out four times — a",
+    "MenuItemBuilder in Rust, a match arm on its id, the `menu-{id}` string that arm",
+    "emitted, and the listener for that same string in main.ts — plus a fifth time as",
+    "prose in the shortcuts sheet. Getting the prefix or the id wrong in any one of those",
+    "places failed SILENTLY: no compile error, no runtime error, the menu item just did",
+    "nothing when clicked. There is nothing left to get out of sync here.",
+    "",
+    "PREDEFINED ITEMS ARE NOT LISTED HERE, on purpose. Cut/Copy/Paste, About, Services,",
+    "Hide, Minimize, Zoom and everything macOS appends to the Window menu are routed by",
+    "the OS through the responder chain to whichever window is focused, with no app code",
+    "involved at all — they have no id to dispatch and no event to listen for. This file",
+    "covers the custom items, which are exactly the ones this app has to route itself.",
+    "",
+    "The menu stays BUILT IN RUST. This manifest moves the strings, not the construction:",
+    "a JS-built menu's action callback runs in the webview that built the menu, so with",
+    "several windows open File > Save would save the wrong document (design note 1 in",
+    "README.md). Adding an item here does not make it a frontend concern.",
+    "",
+    "Fields:",
+    "  id                the menu item's id; the event it dispatches is `menu-{id}`",
+    "  label             what the menu draws",
+    "  accelerator       Tauri accelerator string, omitted for menu-only items",
+    "  submenu           which submenu below it belongs to",
+    "  separatorBefore   draw a separator above this item (menu grouping is data too)",
+    "  description       what it does, in the Help > Keyboard Shortcuts sheet's voice",
+    "",
+    "`description` is required even for items with no accelerator, which the sheet",
+    "therefore never shows. It is the one-line answer to 'what does this item do', which",
+    "is worth having written down next to the item either way, and it means adding an",
+    "accelerator later is a one-field change rather than a hunt for wording."
+  ],
+  "submenus": [
+    { "key": "app", "title": "GeekityFlow" },
+    { "key": "file", "title": "File" },
+    { "key": "outliner", "title": "Outliner" },
+    { "key": "reorg", "title": "Reorg" },
+    { "key": "help", "title": "Help" }
+  ],
+  "items": [
+    {
+      "id": "quit",
+      "label": "Quit GeekityFlow",
+      "accelerator": "CmdOrCtrl+Q",
+      "submenu": "app",
+      "separatorBefore": true,
+      "description": "Quit, prompting for every document with unsaved changes"
+    },
+
+    {
+      "id": "new",
+      "label": "New",
+      "accelerator": "CmdOrCtrl+N",
+      "submenu": "file",
+      "description": "New document"
+    },
+    {
+      "id": "open",
+      "label": "Open…",
+      "accelerator": "CmdOrCtrl+O",
+      "submenu": "file",
+      "description": "Open…"
+    },
+    {
+      "id": "new-window",
+      "label": "New Window",
+      "accelerator": "CmdOrCtrl+Shift+N",
+      "submenu": "file",
+      "separatorBefore": true,
+      "description": "New window, in a tab group of its own"
+    },
+    {
+      "id": "close-tab",
+      "label": "Close Tab",
+      "accelerator": "CmdOrCtrl+W",
+      "submenu": "file",
+      "description": "Close this tab"
+    },
+    {
+      "id": "close-window",
+      "label": "Close Window",
+      "accelerator": "CmdOrCtrl+Shift+W",
+      "submenu": "file",
+      "description": "Close every tab in this window"
+    },
+    {
+      "id": "save",
+      "label": "Save",
+      "accelerator": "CmdOrCtrl+S",
+      "submenu": "file",
+      "separatorBefore": true,
+      "description": "Save"
+    },
+    {
+      "id": "save-as",
+      "label": "Save As…",
+      "accelerator": "CmdOrCtrl+Shift+S",
+      "submenu": "file",
+      "description": "Save As…"
+    },
+
+    {
+      "id": "expand",
+      "label": "Expand",
+      "submenu": "outliner",
+      "description": "Expand the headline's subs one level"
+    },
+    {
+      "id": "expand-all-subs",
+      "label": "Expand All Subs",
+      "submenu": "outliner",
+      "description": "Expand the headline's whole subtree"
+    },
+    {
+      "id": "expand-everything",
+      "label": "Expand Everything",
+      "submenu": "outliner",
+      "description": "Expand every headline in the outline"
+    },
+    {
+      "id": "collapse",
+      "label": "Collapse",
+      "submenu": "outliner",
+      "separatorBefore": true,
+      "description": "Collapse the headline's subs one level"
+    },
+    {
+      "id": "collapse-everything",
+      "label": "Collapse Everything",
+      "submenu": "outliner",
+      "description": "Collapse every headline in the outline"
+    },
+    {
+      "id": "hoist",
+      "label": "Hoist",
+      "submenu": "outliner",
+      "separatorBefore": true,
+      "description": "Hoist — make the headline's subs the top level"
+    },
+    {
+      "id": "dehoist",
+      "label": "Dehoist",
+      "submenu": "outliner",
+      "description": "De-hoist — pop back out one level"
+    },
+    {
+      "id": "find",
+      "label": "Find…",
+      "accelerator": "CmdOrCtrl+F",
+      "submenu": "outliner",
+      "separatorBefore": true,
+      "description": "Find…"
+    },
+    {
+      "id": "find-again",
+      "label": "Find again",
+      "accelerator": "CmdOrCtrl+G",
+      "submenu": "outliner",
+      "description": "Find again — repeat the last search"
+    },
+
+    {
+      "id": "reorg-move-up",
+      "label": "Move Up",
+      "accelerator": "CmdOrCtrl+U",
+      "submenu": "reorg",
+      "description": "Move the headline up among its siblings"
+    },
+    {
+      "id": "reorg-move-down",
+      "label": "Move Down",
+      "accelerator": "CmdOrCtrl+D",
+      "submenu": "reorg",
+      "description": "Move the headline down among its siblings"
+    },
+    {
+      "id": "reorg-move-left",
+      "label": "Move Left",
+      "accelerator": "CmdOrCtrl+L",
+      "submenu": "reorg",
+      "description": "Move the headline left — outdent to the parent's level"
+    },
+    {
+      "id": "reorg-move-right",
+      "label": "Move Right",
+      "accelerator": "CmdOrCtrl+R",
+      "submenu": "reorg",
+      "description": "Move the headline right — indent under the previous headline"
+    },
+    {
+      "id": "reorg-toggle-comment",
+      "label": "Toggle comment",
+      "accelerator": "CmdOrCtrl+\\",
+      "submenu": "reorg",
+      "separatorBefore": true,
+      "description": "Toggle comment on the headline"
+    },
+    {
+      "id": "reorg-run-selection",
+      "label": "Run selection",
+      "accelerator": "CmdOrCtrl+/",
+      "submenu": "reorg",
+      "description": "Run selection — evaluate the headline as JavaScript"
+    },
+    {
+      "id": "reorg-delete-line",
+      "label": "Delete Line",
+      "submenu": "reorg",
+      "separatorBefore": true,
+      "description": "Delete the headline"
+    },
+    {
+      "id": "reorg-promote",
+      "label": "Promote",
+      "accelerator": "CmdOrCtrl+[",
+      "submenu": "reorg",
+      "separatorBefore": true,
+      "description": "Promote — this headline's subs take its place"
+    },
+    {
+      "id": "reorg-demote",
+      "label": "Demote",
+      "accelerator": "CmdOrCtrl+]",
+      "submenu": "reorg",
+      "description": "Demote — following siblings become this headline's subs"
+    },
+    {
+      "id": "reorg-sort",
+      "label": "Sort",
+      "submenu": "reorg",
+      "separatorBefore": true,
+      "description": "Sort the headline's subs alphabetically"
+    },
+
+    {
+      "id": "keyboard-shortcuts",
+      "label": "Keyboard Shortcuts",
+      "submenu": "help",
+      "description": "Open this sheet"
+    }
+  ]
+}
