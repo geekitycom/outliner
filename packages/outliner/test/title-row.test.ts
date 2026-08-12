@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { Outliner } from '../src'
-import { eventsEnabled } from '../src/runtime'
-import { mount, opml, bodyTree } from './helpers'
+import { mount, opml, bodyTree, headlineCount, keydown, KEY } from './helpers'
 
 /** The title row's editable field, or null if the row isn't in the DOM. */
 function titleRowText(o: Outliner): HTMLElement | null {
@@ -30,9 +29,9 @@ function opmlSansTimestamp(xml: string): string {
 
 /**
  * Type into the row, then take focus away *without* letting its `blur`
- * through — what a native Save/Open panel does. This is the state the row's
- * `editing` flag can outlive, so it's the setup for anything that has to
- * cope with a session whose focus is already gone.
+ * through — what a native Save/Open panel does. This is the state an edit
+ * session can outlive, so it's the setup for anything that has to cope with a
+ * session whose caret is already gone.
  *
  * `once` matters: the suppressor must swallow exactly this one blur. Left
  * installed it would also eat the blur of a later deliberate commit.
@@ -215,18 +214,144 @@ describe('title row (opt-in via prefs.titleRow)', () => {
     expect(o.hasChanged()).toBe(false)
   })
 
-  it('suspends the outline\'s global keydown dispatch while the field is focused', () => {
+  // --- moved down from the e2e suite -----------------------------------------
+  //
+  // These used to live in e2e/title-row.spec.ts because the focus machinery was
+  // unreachable from jsdom: it decided which outline was in charge by asking
+  // `offsetParent`, which jsdom always reports as null, so keystroke dispatch
+  // did nothing at all under Vitest and a unit test would have passed whether
+  // or not the bug it named existed. Ownership is now pushed from focusin /
+  // focusout (docs/adr/0001), which jsdom implements faithfully, so they run
+  // here -- in a fraction of the time, and against the same code.
+
+  it('toOpml() includes a title typed but not yet blurred out of', () => {
+    // Cmd-S straight from the field. Serializing has to settle the open edit
+    // first, or the document written to disk carries the *previous* title --
+    // and nothing on screen would say so.
     const o = mount(opml('<outline text="a"/>'))
     o.prefs({ titleRow: true })
-    expect(eventsEnabled()).toBe(true)
 
     const el = requireTitleRowText(o)
     el.focus()
-    expect(eventsEnabled()).toBe(false)
+    el.textContent = 'Unblurred'
 
+    expect(o.toOpml()).toContain('<title>Unblurred</title>')
+  })
+
+  it('an edit started on the title lands on the title, even if a hoist intervenes', () => {
+    const o = mount(opml('<outline text="a"><outline text="a1"/></outline>'))
+    o.prefs({ titleRow: true })
+
+    // Start editing the *document title*, then lose focus the way a native
+    // menu does -- with no blur -- so the pending edit is settled by the next
+    // refresh rather than by the field itself.
+    typeThenLoseFocusWithoutBlur(o, 'My Notes')
+
+    // Now hoist. That refresh settles the edit, and the row's target has
+    // already flipped from the document title to the hoisted headline.
+    // Resolving the target at commit time wrote "My Notes" into the newly
+    // hoisted headline -- renaming the wrong thing and dropping the title edit
+    // entirely. The target is captured when the edit begins, so it still lands
+    // on the title.
+    o.hoist()
+
+    expect(o.getTitle()).toBe('My Notes')
+
+    o.deHoist()
+    expect(bodyTree(o.toOpml()).map((n) => n.text)).toEqual(['a'])
+  })
+
+  it('typing in the row does not reach the outline', () => {
+    const o = mount(opml('<outline text="a"/><outline text="b"/>'))
+    o.prefs({ titleRow: true })
+    o.pasteBin.focus() // the outline owns the caret to begin with
+    const before = headlineCount(o)
+
+    const el = requireTitleRowText(o)
+    el.focus()
+
+    // Tab would reorg a headline and Return would insert one, if the outline's
+    // keydown handling were still live while this field has the caret. Both
+    // routes are exercised: at the field, which is the path a real keystroke
+    // takes and which the row also stops propagating, and at the document,
+    // which is the dispatcher's own doorstep and so leaves caret ownership as
+    // the only thing that can refuse it.
+    keydown(KEY.x, {}, el)
+    keydown(KEY.tab, {}, el)
+    keydown(KEY.return)
+    keydown(KEY.down)
+
+    // Counted from the DOM rather than from toOpml(), which would flush the
+    // row's open edit and with it the very claim under test (see
+    // `headlineCount` in helpers).
+    expect(headlineCount(o)).toBe(before)
+    expect(o.cursor.getLineText()).toBe('a')
+    expect(o.isTextMode()).toBe(false)
+
+    el.blur() // commit, so the row's claim on the caret doesn't outlive the test
+  })
+
+  // The next two are *duplicated* in e2e/title-row.spec.ts on purpose. They
+  // turn on what happens when focus is taken away without a blur -- a native
+  // Save or Open panel -- and that is the one place jsdom only approximates
+  // Chromium: here the missing blur is staged by suppressing the event, where
+  // in a real browser it genuinely never fires. Running both copies means a
+  // divergence between the two shows up as a failing test rather than as a bug
+  // report, which is exactly what we want to hear about. The cheap copy runs on
+  // every change; the expensive one keeps it honest.
+
+  it('still refreshes after focus is lost without a blur', () => {
+    const o = mount(opmlTitled('DOC-A', '<outline text="a"/>'))
+    o.prefs({ titleRow: true })
+
+    typeThenLoseFocusWithoutBlur(o, 'TYPED-BY-USER')
+    o.loadOpml(opmlTitled('Opened File', '<outline text="z"/>'))
+
+    // The session that outlived its focus used to make refresh() a permanent
+    // no-op, so the row froze on stale text: open a file and the outline
+    // underneath changes while the row still names the document you closed.
+    expect(requireTitleRowText(o).textContent).toBe('Opened File')
+  })
+
+  it('is still editable after focus is lost without a blur', () => {
+    const o = mount(opmlTitled('DOC-A', '<outline text="a"/>'))
+    o.prefs({ titleRow: true })
+
+    typeThenLoseFocusWithoutBlur(o, 'Typed Before Saving')
+
+    // The stuck session also made beginEdit() return early forever -- the
+    // "can't edit the title after saving" bug. A second click has to open a
+    // fresh edit, on top of committing the one that was left open.
+    editTitleRow(o, 'Edited After Save', 'Enter')
+
+    expect(requireTitleRowText(o).textContent).toBe('Edited After Save')
+    expect(o.getTitle()).toBe('Edited After Save')
+  })
+
+  it('suspends the outline\'s keystrokes while the field has the caret', () => {
+    // Asserted through what the user would see rather than through
+    // `eventsEnabled()`, which this test used to inspect: the question is not
+    // whether some flag is set, it is whether a keystroke typed into the title
+    // row also reorganizes the outline behind it. (The flag reading was also
+    // the only thing this could check while keystroke dispatch was inert under
+    // jsdom -- it no longer is, so there is no reason to settle for it.)
+    const o = mount(opml('<outline text="a"/><outline text="b"/>'))
+    o.prefs({ titleRow: true })
+    o.pasteBin.focus()
+    const el = requireTitleRowText(o)
+
+    el.focus()
+    keydown(KEY.return)
+    keydown(KEY.down)
+    expect(headlineCount(o)).toBe(2) // no headline inserted
+    expect(o.cursor.getLineText()).toBe('a') // the cursor stayed put
+
+    // Committing the edit hands the caret back, and the outline is an outline
+    // again on the very next keystroke.
     el.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
     )
-    expect(eventsEnabled()).toBe(true)
+    keydown(KEY.return)
+    expect(headlineCount(o)).toBe(3)
   })
 })

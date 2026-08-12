@@ -2,9 +2,9 @@
 // sources of truth rather than guessed: the keystroke-name mapping in
 // packages/outliner/src/util.ts (CONCORD_KEYSTROKES, lines 33-63) and what
 // each of those names actually does in packages/outliner/src/keyboard.ts.
-// Rendered with showModal() from modal.ts, which already brackets
-// stopListening()/resumeListening() around the dialog so arrow keys and
-// Cmd-B don't leak through to the outline sitting behind it.
+// Rendered with showModal() from modal.ts, which already claims the caret for
+// the dialog so arrow keys and Cmd-B don't leak through to the outline sitting
+// behind it.
 import { showModal } from './modal'
 
 interface Shortcut {

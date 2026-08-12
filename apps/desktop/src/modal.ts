@@ -3,17 +3,32 @@
 // unsaved-changes prompt below is the first caller, and the Help ▸ Keyboard
 // Shortcuts sheet (a later commit) is the second, which is why this stays
 // generic rather than baking in "confirm discard" specifics.
-import { stopListening, resumeListening } from '@andrewshell/outliner'
+import { claim } from '@andrewshell/outliner'
 
 /**
  * Show `content` in a modal <dialog> and resolve with its `returnValue` once
  * it closes.
  *
- * stopListening()/resumeListening() bracket the dialog's whole lifetime so
- * arrow keys and Cmd-B don't leak through to the outline sitting behind it.
- * resumeListening() is wired to the dialog's `close` event rather than
- * chained onto a button click, so it still runs when the dialog is dismissed
- * with Esc instead of an explicit button.
+ * The dialog claims the caret for its whole lifetime, so arrow keys and Cmd-B
+ * don't leak through to the outline sitting behind it. Releasing is wired to
+ * the dialog's `close` event rather than chained onto a button click, so it
+ * still runs when the dialog is dismissed with Esc instead of an explicit
+ * button — and releasing hands the caret back to whoever had it before the
+ * dialog opened, which is why nothing here has to know that the thing behind it
+ * is an outline, let alone whether it was mid-edit.
+ *
+ * This replaces a stopListening()/resumeListening() bracket that was not
+ * reentrant: opening this dialog while the outliner's title row was being typed
+ * in did nothing (already stopped), and closing it re-enabled events for
+ * everyone — including the title row, whose field still had the caret. The
+ * claim is per-dialog, so overlapping suspensions now nest instead of
+ * cancelling each other (docs/adr/0002).
+ *
+ * The claim goes in before showModal(), deliberately. The claim records who
+ * held the caret at the moment it was taken, and that is who gets it back on
+ * release; claiming afterwards would record the dialog's own autofocused button
+ * as the thing to restore, and that button is about to be removed from the
+ * document, so the caret would end up nowhere.
  */
 export function showModal(content: HTMLElement): Promise<string> {
   const dialog = document.createElement('dialog')
@@ -21,13 +36,15 @@ export function showModal(content: HTMLElement): Promise<string> {
   dialog.appendChild(content)
   document.body.appendChild(dialog)
 
-  stopListening()
+  const release = claim({ kind: 'field', el: dialog })
 
   return new Promise((resolve) => {
     dialog.addEventListener(
       'close',
       () => {
-        resumeListening()
+        // Before remove(), so the caret is handed back while the dialog is
+        // still in the document and the browser has somewhere to move it from.
+        release()
         dialog.remove()
         resolve(dialog.returnValue)
       },

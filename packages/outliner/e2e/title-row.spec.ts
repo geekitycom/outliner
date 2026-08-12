@@ -7,7 +7,6 @@ type PageOutliner = {
     getTitle(): string
     loadOpml(x: string): void
     hoist(): boolean
-    deHoist(): boolean
   }
 }
 
@@ -15,12 +14,23 @@ function toOpml(page: Page): Promise<string> {
   return page.evaluate(() => (window as unknown as PageOutliner).outliner.toOpml())
 }
 
-// The title row's focus behavior can only be tested in a real browser. jsdom
-// gives every element zero size, so `visibleRoots()` finds nothing and the
-// document-level mouseup handler in globals.ts never reaches the branch that
-// pulls focus back to the pasteBin — the branch that made the row impossible
-// to type into when it first shipped. A unit test here would pass whether or
-// not the bug existed, which is why this lives in the e2e suite instead.
+// What is left in this file after caret ownership became push-based
+// (docs/adr/0001): the cases that need a real browser, and two that are
+// deliberately duplicated in test/title-row.test.ts.
+//
+// Most of the row's behavior used to have to live here. Ownership was decided
+// by asking which outline roots were visible, via `offsetParent`, which jsdom
+// always reports as null — so keystroke dispatch did nothing at all under
+// Vitest and a unit test would have passed whether or not the bug it named
+// existed. That is no longer true, and the bookkeeping cases (what ends up in
+// the saved OPML, which thing an edit lands on) have moved down to the unit
+// suite where they run in milliseconds.
+//
+// The tests that stayed need something jsdom does not have: real layout and
+// real pointer input. A `page.click()` lands at a coordinate, hits whatever is
+// actually painted there, and moves focus as the browser's own default action —
+// which is precisely the sequence that made this row impossible to type into
+// when it first shipped, and no dispatched event in jsdom reproduces it.
 test.describe('title row', () => {
   test('clicking the row focuses it and typing edits the document title', async ({ page }) => {
     await page.goto('/e2e/fixtures/title-row.html')
@@ -65,6 +75,14 @@ test.describe('title row', () => {
     })
   }
 
+  // The next two also exist in test/title-row.test.ts, on purpose. They are the
+  // only cases here that turn on focus being *lost*, and that is where jsdom
+  // only approximates Chromium: the unit copy stages the missing blur by
+  // suppressing the event, whereas here it genuinely never fires. Keeping both
+  // means a divergence between the two engines shows up as a failing test
+  // rather than as a bug report — the cheap copy runs on every change, this one
+  // keeps it honest. Delete this pair only together, and only if you are
+  // willing to stop hearing about that difference.
   test('still refreshes after focus is lost without a blur', async ({ page }) => {
     await page.goto('/e2e/fixtures/title-row.html')
     const title = page.locator('.concord-title-row .concord-text')
@@ -100,57 +118,18 @@ test.describe('title row', () => {
     ).toBe('Edited After Save')
   })
 
-  test('toOpml() includes a title typed but not yet blurred out of', async ({ page }) => {
-    await page.goto('/e2e/fixtures/title-row.html')
-
-    await page.locator('.concord-title-row .concord-text').click()
-    await page.keyboard.press('ControlOrMeta+a')
-    await page.keyboard.type('Unblurred')
-
-    // Saving straight from the field must not write the previous title.
-    expect(await toOpml(page)).toContain('<title>Unblurred</title>')
-  })
-
-  test('an edit started on the title lands on the title, even if a hoist intervenes', async ({
-    page,
-  }) => {
-    await page.goto('/e2e/fixtures/title-row.html')
-    const title = page.locator('.concord-title-row .concord-text')
-
-    // Start editing the *document title*...
-    await title.click()
-    await page.keyboard.press('ControlOrMeta+a')
-    await page.keyboard.type('My Notes')
-
-    // ...lose focus the way a native menu does (no blur), so the pending edit
-    // is settled by the next refresh rather than by the field itself...
-    await stealFocusWithoutBlur(page)
-
-    // ...then hoist. That refresh now settles the edit, and the row's target
-    // has already flipped from the title to the hoisted headline. Resolving
-    // the target at commit time wrote "My Notes" into the newly hoisted
-    // headline — renaming the wrong thing and dropping the title edit. The
-    // target is captured when the edit begins, so it still lands on the title.
-    await page.evaluate(() => (window as unknown as PageOutliner).outliner.hoist())
-
-    expect(
-      await page.evaluate(() => (window as unknown as PageOutliner).outliner.getTitle()),
-    ).toBe('My Notes')
-
-    // ...and the hoisted headline keeps its own text.
-    await page.evaluate(() => (window as unknown as PageOutliner).outliner.deHoist())
-    expect(await toOpml(page)).toContain('text="a"')
-  })
-
   test('takes a click while the outline is editing a headline', async ({ page }) => {
     await page.goto('/e2e/fixtures/title-row.html')
     const title = page.locator('.concord-title-row .concord-text')
 
     // Put the outline into text-edit mode, which is the state a hoist leaves
-    // it in. resumeListening() restores outline focus two different ways —
-    // pasteBinFocus() when idle, focusCursor() when editing text — and only
-    // the first was guarded against stealing focus from this row. So the row
-    // worked until you hoisted, then stopped taking clicks at all.
+    // it in. Handing the caret back to an outline goes two different ways —
+    // pasteBinFocus() when idle, focusCursor() when editing text — and when
+    // those two branches were written out separately, only the first was
+    // guarded against stealing the caret from this row. So the row worked
+    // until you hoisted, then stopped taking clicks at all. Both branches now
+    // live in one place (`Outliner.caretOwner().focus`) and neither can take
+    // the caret while this row holds a claim on it.
     await page.locator('.concord-root .concord-text').first().dblclick()
     await expect(page.locator('.concord-root .concord-text').first()).toBeFocused()
 
@@ -172,23 +151,5 @@ test.describe('title row', () => {
 
     await title.click()
     await expect(title).toBeFocused()
-  })
-
-  test('typing in the row does not reach the outline', async ({ page }) => {
-    await page.goto('/e2e/fixtures/title-row.html')
-
-    const before = await toOpml(page)
-    await page.locator('.concord-title-row .concord-text').click()
-
-    // Tab would reorganize a headline, and typing would edit one, if the
-    // outline's own keydown handling were still live while the field has
-    // focus. stopListening() is what prevents that.
-    await page.keyboard.type('x')
-    await page.keyboard.press('Tab')
-
-    // Compare only the <body>: the OPML head carries a dateModified stamped
-    // per call, which differs between two reads regardless of any edit.
-    const bodyOf = (opml: string) => opml.slice(opml.indexOf('<body>'))
-    expect(bodyOf(await toOpml(page))).toBe(bodyOf(before))
   })
 })

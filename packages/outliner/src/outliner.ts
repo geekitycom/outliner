@@ -18,13 +18,9 @@ import { bindEvents } from './events'
 import { injectIconStyles } from './icons'
 import { installGlobals } from './globals'
 import { TitleRow } from './titleRow'
-import {
-  register,
-  onResume as runtimeOnResume,
-  eventsEnabled as runtimeEventsEnabled,
-} from './runtime'
-
-let ready = false
+import { register } from './runtime'
+import { place, registerOutline, suspended } from './caret'
+import type { OutlineOwner } from './caret'
 
 export interface InstanceState {
   prefs: OutlinerPrefs
@@ -61,6 +57,12 @@ export class Outliner {
   readonly script: Script
   readonly state: InstanceState
   private readonly titleRowCtl: TitleRow
+  // Whether the constructor has finished. Per-instance, not module-global:
+  // as a global it was flipped true by whichever Outliner was built last, so
+  // a second instance made the first one's `isReady()` lie -- and the first
+  // instance's pasteBinFocus() started working halfway through the second
+  // one's constructor.
+  private ready = false
   // Internal head-change subscribers. Views composed into this instance
   // (currently just the title row) register here via `onHeadChange()`
   // instead of op.ts calling them by name -- op.ts only ever calls
@@ -68,6 +70,8 @@ export class Outliner {
   // site there. Library consumers should use `OutlinerCallbacks.opHeadChange`
   // instead of this -- it fires alongside every listener registered here.
   private readonly headListeners: Array<(headers: OpmlHeaders) => void> = []
+  // Work deferred until this outline gets the caret back -- see `onResume()`.
+  private readonly resumeListeners: Array<() => void> = []
 
   constructor(container: HTMLElement, options?: OutlinerOptions) {
     this.container = container
@@ -126,6 +130,7 @@ export class Outliner {
     this.titleRowCtl = new TitleRow(this, existingTitleRow ?? undefined)
 
     register(this.root, this)
+    registerOutline(this.caretOwner())
     installGlobals()
     bindEvents(this)
 
@@ -133,21 +138,106 @@ export class Outliner {
       if (options.prefs) this.prefs(options.prefs)
       if (options.callbacks) this.state.callbacks = options.callbacks
     }
-    ready = true
+    this.ready = true
+  }
+
+  /**
+   * This instance as a caret owner (see caret.ts). Everything the caret module
+   * knows about an outline is here:
+   *
+   *  - `owns` is the containment test. The pasteBin is named explicitly because
+   *    it is a *sibling* of `root`, not a descendant, yet the caret sitting in
+   *    it is the outline being navigated rather than a field being typed into.
+   *  - `focus` is the one place the "text mode or navigation?" branch is
+   *    written. It used to appear twice in runtime.ts -- in setFocusRoot() and
+   *    again in resumeListening() -- and the bug that a title-row guard was
+   *    added to only one of the two branches had to be fixed twice for exactly
+   *    that reason.
+   *  - `lost` drops the UI that only makes sense while this outline holds the
+   *    caret, and banks the text selection so `focus` can put it back.
+   *
+   * The selection save/restore pair used to be the first line of
+   * `stopListening()` and the last line of `resumeListening()`, which is why it
+   * only ever worked for callers who went through that one door: open a modal
+   * any other way and the user came back to a caret at the start of the
+   * headline. Hanging it off the ownership transition instead means it happens
+   * however the caret leaves and however it comes back. There is no "did I save
+   * anything" flag to go stale, either: `nodeRanges` (editor.ts) *is* that
+   * record, keyed by the headline, and `restoreSelection()` is a no-op when it
+   * holds nothing for the cursor.
+   */
+  private caretOwner(): OutlineOwner {
+    return {
+      root: this.root,
+      owns: (target) => this.root.contains(target) || this.pasteBin.contains(target),
+      focus: () => {
+        if (this.op.inTextMode()) {
+          this.op.focusCursor()
+          this.editor.restoreSelection()
+        } else {
+          this.pasteBinFocus()
+        }
+        this.drainResume()
+      },
+      lost: () => {
+        this.editor.hideContextMenu()
+        this.editor.dragModeExit()
+        // Banked while the caret is still in the headline: `lost` runs on the
+        // ownership transition, which is *before* the claimant focuses itself,
+        // so the range is still live here and gone a moment later.
+        if (this.op.inTextMode()) this.editor.saveSelection()
+      },
+    }
+  }
+
+  /**
+   * Run whatever was deferred by `onResume()`, now that this outline has the
+   * caret back.
+   *
+   * Guarded on `suspended()` because a claim can be released while another is
+   * still in force -- two overlapping suspensions is the case docs/adr/0002
+   * exists for -- and also because an outline claims the caret *for itself*
+   * during `Op.execFormat`, which would otherwise run deferred work in the
+   * middle of a document.execCommand sequence with the cursor deliberately
+   * blurred.
+   */
+  private drainResume(): void {
+    if (suspended()) return
+    const pending = this.resumeListeners.splice(0)
+    for (const cb of pending) cb()
   }
 
   // --- internals used across modules ---------------------------------------
 
   isReady(): boolean {
-    return ready
+    return this.ready
   }
 
+  /** Whether this outline is acting on input at all, or has been suspended by
+   *  something that claimed the caret. `Op.link()` is the caller that matters:
+   *  an app can call it from its own modal, where the selection it is supposed
+   *  to wrap in an anchor is not live. */
   eventsEnabled(): boolean {
-    return runtimeEventsEnabled()
+    return !suspended()
   }
 
+  /**
+   * Defer `cb` until this outline has the caret back.
+   *
+   * The one survivor of the old no-arg focus API (docs/adr/0002). Its only
+   * caller is `Op.link()`, which defers itself when the outline is suspended --
+   * and that path exists for the Concord compatibility layer's `opLink`, where
+   * an old app collects a URL in its own modal and calls in while that modal
+   * still holds the caret. Compat is a documented, separately-built artifact,
+   * so quietly dropping the link would be a real regression.
+   *
+   * It used to be drained by `resumeListening()`, i.e. by whoever happened to
+   * lift the *global* suspension. It now drains from this instance's `focus`
+   * hook above, so the trigger is the outline genuinely getting the caret back
+   * -- from any path, and only once every claim over it has been released.
+   */
   onResume(cb: () => void): void {
-    runtimeOnResume(cb)
+    this.resumeListeners.push(cb)
   }
 
   /** Push the current "what you're looking at" text into the title row, if
@@ -191,21 +281,15 @@ export class Outliner {
     this.state.callbacks.opKeystroke?.(event)
   }
 
+  /** Park the caret in the pasteBin over the cursor headline -- the outline's
+   *  navigation-mode way of holding the caret, so keystrokes are outline
+   *  commands and a copy has something to copy from. The title-row guard that
+   *  used to sit here is gone: `place()` below declines whenever a different
+   *  owner holds the caret, for every caller at once. */
   pasteBinFocus(): void {
-    if (!ready || typeof navigator === 'undefined') return
+    if (!this.ready || typeof navigator === 'undefined') return
     if (/Android|webOS|iPhone|iPad|iPod|BlackBerry/i.test(navigator.userAgent)) return
     if (!this.root.isConnected) return
-    // Never steal focus away from the title row (prefs.titleRow) while the
-    // user is in it. Three separate paths reach here — setFocusRoot(),
-    // resumeListening(), and the document-level mouseup in globals.ts — and
-    // they chain: focusCursor() below blurs the row, the row's blur commits,
-    // commit() calls resumeListening(), which lands back here. The row could
-    // never be clicked into at all. Guarding the one place they all funnel
-    // through fixes every path at once, where patching each caller wouldn't.
-    // Committing is unaffected: the row blurs itself *before* commit() runs,
-    // so by then this check passes and focus returns to the outline.
-    const active = typeof document !== 'undefined' ? document.activeElement : null
-    if (active && active.closest('.concord-title-row')) return
     const node = this.op.getCursor()
     if (!node) return
     const rect = node.getBoundingClientRect()
@@ -218,8 +302,7 @@ export class Outliner {
     const t = this.pasteBin.textContent
     if (t === '' || t === '\n') this.pasteBin.textContent = '...'
     this.op.focusCursor()
-    this.pasteBin.focus()
-    if (this.pasteBin === document.activeElement) document.execCommand('selectAll')
+    if (place(this.pasteBin)) document.execCommand('selectAll')
   }
 
   setCustomStyle(css: string): void {

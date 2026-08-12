@@ -4,6 +4,7 @@ import type { Outliner } from './outliner'
 import { escapeXml } from './util'
 import { iconHtml, setIcon } from './icons'
 import { sharedClipboard } from './clipboard'
+import { place } from './caret'
 import {
   childNodes,
   childOl,
@@ -92,8 +93,17 @@ export class Editor {
     const text = textOf(node)
     if (!text) return
     if (empty) text.innerHTML = ''
-    text.focus()
-    if (text.childNodes[0]) {
+    // Only touch the caret and the selection if the outline is actually holding
+    // the caret. This was an unguarded `.focus()`, and it is reachable from
+    // op.setCursor(), so a *programmatic* cursor move -- an app calling go() or
+    // find() while the user is typing in the title row -- pulled the caret out
+    // of the row mid-edit. The range work has to sit behind the same test:
+    // there is one document selection, so collapsing it into a headline would
+    // move the visible insertion point out of the row even with focus left
+    // alone. The `editing` class below is the outline's own state, not the
+    // caret's, so it is set either way.
+    const held = place(text)
+    if (held && text.childNodes[0]) {
       const range = document.createRange()
       range.selectNodeContents(text)
       range.collapse(false)
@@ -505,7 +515,7 @@ export class Editor {
           this.o.op.insertText(h)
         } else {
           this.o.op.saveState()
-          concordText.focus()
+          place(concordText)
           const node = concordText.closest('.concord-node') as HTMLLIElement
           const range = this.o.state.nodeRanges.get(node)
           if (range) {

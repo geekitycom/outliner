@@ -2,7 +2,8 @@
 // the original concord.js IIFE.
 import { getKeystroke, beep, stringMid, stringDelete } from './util'
 import { UP, DOWN, LEFT, RIGHT, IS_MOBILE } from './constants'
-import { eventsEnabled, getFocusRoot, outlinerForRoot } from './runtime'
+import { outlinerForRoot } from './runtime'
+import { owner } from './caret'
 import { iconHtml } from './icons'
 import { textOf } from './dom'
 import type { KeystrokeEvent } from './types'
@@ -20,13 +21,23 @@ function caretPosition(node: Element): number {
 }
 
 export function handleKeydown(event: KeyboardEvent): void {
-  if (!eventsEnabled()) return
-  const t = event.target
-  if (t instanceof Element && (t.matches('input') || t.matches('textarea'))) return
-
-  const focusRoot = getFocusRoot()
-  if (!focusRoot) return
-  const o = outlinerForRoot(focusRoot)
+  // The whole gate, in one question: keystrokes are outline commands only while
+  // an outline owns the caret. There is no separate "are events enabled" flag
+  // any more -- a field that suspends the outline does it by taking the caret,
+  // so the suspension and the ownership are the same fact, and this can no
+  // longer dispatch to an outline that has been suspended but still looks
+  // focused (or refuse to dispatch to one that is focused but whose suspension
+  // somebody else released -- the bug docs/adr/0002 exists for).
+  //
+  // No `input`/`textarea` check here either. That was the same rule as the
+  // title row's three other guards, discovered a third way -- and discovering
+  // it by tag name is exactly why the title row was missed, since a
+  // contenteditable div is neither. Ownership covers inputs, textareas,
+  // dialogs, the title row and anything an app puts on the page, without
+  // naming any of them.
+  const current = owner()
+  if (current.kind !== 'outline') return
+  const o = outlinerForRoot(current.root)
   if (!o) return
   const op = o.op
 

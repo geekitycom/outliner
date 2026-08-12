@@ -1,9 +1,9 @@
 // The Outliner ▸ Find… / Find again prompt: asks for search text, then calls
 // outliner.find()/findAgain(). Built on the existing showModal() (see
-// modal.ts), which already brackets stopListening()/resumeListening() around
-// the dialog so arrow keys and Cmd-B don't leak through to the outline
-// sitting behind it — not window.prompt(), which is a blocking browser
-// dialog with no such bracketing and is unreliable inside a webview.
+// modal.ts), which already claims the caret for the dialog so arrow keys and
+// Cmd-B don't leak through to the outline sitting behind it — not
+// window.prompt(), which is a blocking browser dialog that claims nothing and
+// is unreliable inside a webview.
 import type { Outliner } from '@andrewshell/outliner'
 import { message } from '@tauri-apps/plugin-dialog'
 import { showModal } from './modal'

@@ -2,7 +2,11 @@
 // event delegation on the root element instead of jQuery's `.on(sel, fn)`.
 import type { Outliner } from './outliner'
 import { IS_MOBILE } from './constants'
-import { eventsEnabled } from './runtime'
+// `suspended()` replaces the old `eventsEnabled()` flag, with the sense
+// flipped: every handler below is refusing to run while some field has claimed
+// the caret (the title row mid-edit, an app's modal), which used to be a global
+// boolean anyone could switch back on for everyone (docs/adr/0002).
+import { place, suspended } from './caret'
 import { sharedClipboard } from './clipboard'
 import { closestNode, textOf } from './dom'
 
@@ -25,7 +29,7 @@ export function bindEvents(o: Outliner): void {
 
   // --- double click ---------------------------------------------------------
   root.addEventListener('dblclick', (e) => {
-    if (!eventsEnabled()) return
+    if (suspended()) return
     if (o.state.dropdown) {
       editor.hideContextMenu()
       return
@@ -65,7 +69,7 @@ export function bindEvents(o: Outliner): void {
 
   // --- single click ---------------------------------------------------------
   root.addEventListener('click', (e) => {
-    if (!eventsEnabled()) return
+    if (suspended()) return
     if (o.state.dropdown) {
       e.stopPropagation()
       editor.hideContextMenu()
@@ -114,7 +118,7 @@ export function bindEvents(o: Outliner): void {
 
   // --- hover ----------------------------------------------------------------
   root.addEventListener('mouseover', (e) => {
-    if (!eventsEnabled()) return
+    if (suspended()) return
     const target = e.target as Element
     const wrapper = target.closest('.concord-wrapper')
     if (wrapper) {
@@ -129,7 +133,7 @@ export function bindEvents(o: Outliner): void {
   })
 
   root.addEventListener('mouseout', () => {
-    if (!eventsEnabled() || readonly()) return
+    if (suspended() || readonly()) return
     if (o.state.dragging) {
       root
         .querySelectorAll('.drop-sibling, .drop-child')
@@ -139,7 +143,7 @@ export function bindEvents(o: Outliner): void {
 
   // --- context menu ---------------------------------------------------------
   const onContextMenu = (e: MouseEvent) => {
-    if (!eventsEnabled()) return
+    if (suspended()) return
     if (!o.prefs().contextMenu) return
     e.preventDefault()
     e.stopPropagation()
@@ -158,7 +162,7 @@ export function bindEvents(o: Outliner): void {
 
   // --- blur / focusout ------------------------------------------------------
   root.addEventListener('focusout', (e) => {
-    if (!eventsEnabled()) return
+    if (suspended()) return
     const target = e.target as Element
     if (!target.classList.contains('concord-text')) return
     if (readonly()) return
@@ -174,20 +178,24 @@ export function bindEvents(o: Outliner): void {
 
   // --- paste into a headline ------------------------------------------------
   root.addEventListener('paste', (e) => {
-    if (!eventsEnabled()) return
+    if (suspended()) return
     const target = e.target as Element
     if (!target.closest('.concord-text')) return
     if (readonly()) return
     target.closest('.concord-text')!.classList.add('paste')
     editor.saveSelection()
     o.pasteBin.innerHTML = ''
-    o.pasteBin.focus()
+    // The pasteBin belongs to this outline (caret.ts classifies it as part of
+    // it), so borrowing the caret for the duration of a paste is not an
+    // ownership change -- but it still goes through place(), because if some
+    // field owns the caret this outline has no business grabbing it.
+    place(o.pasteBin)
     setTimeout(editor.sanitize, 10)
   })
 
   // --- pasteBin clipboard ---------------------------------------------------
   o.pasteBin.addEventListener('copy', () => {
-    if (!eventsEnabled()) return
+    if (suspended()) return
     let copyText = ''
     const selected = Array.from(root.querySelectorAll('.selected')) as HTMLLIElement[]
     for (const n of selected) copyText += editor.textLine(n)
@@ -199,13 +207,12 @@ export function bindEvents(o: Outliner): void {
       const pre = document.createElement('pre')
       pre.textContent = copyText
       o.pasteBin.replaceChildren(pre)
-      o.pasteBin.focus()
-      document.execCommand('selectAll')
+      if (place(o.pasteBin)) document.execCommand('selectAll')
     }
   })
 
   o.pasteBin.addEventListener('paste', () => {
-    if (!eventsEnabled() || readonly()) return
+    if (suspended() || readonly()) return
     const cursor = op.getCursor()
     if (cursor) textOf(cursor)?.classList.add('paste')
     o.pasteBin.innerHTML = ''
@@ -213,7 +220,7 @@ export function bindEvents(o: Outliner): void {
   })
 
   o.pasteBin.addEventListener('cut', () => {
-    if (!eventsEnabled() || readonly()) return
+    if (suspended() || readonly()) return
     let copyText = ''
     const selected = Array.from(root.querySelectorAll('.selected')) as HTMLLIElement[]
     for (const n of selected) copyText += editor.textLine(n)
@@ -233,7 +240,7 @@ export function bindEvents(o: Outliner): void {
 
   // --- drag (mousedown / mousemove / mouseup) -------------------------------
   root.addEventListener('mousedown', (e) => {
-    if (!eventsEnabled()) return
+    if (suspended()) return
     const target = e.target as Element
     if (target.matches('a')) {
       const href = target.getAttribute('href')
@@ -283,7 +290,7 @@ export function bindEvents(o: Outliner): void {
   })
 
   root.addEventListener('mousemove', (e) => {
-    if (!eventsEnabled() || readonly()) return
+    if (suspended() || readonly()) return
     const target = e.target as Element
     if (editor.editable(target)) return
     e.preventDefault()
@@ -297,7 +304,7 @@ export function bindEvents(o: Outliner): void {
   })
 
   root.addEventListener('mouseup', (e) => {
-    if (!eventsEnabled() || readonly()) return
+    if (suspended() || readonly()) return
     const target = e.target as Element
     if (editor.editable(target)) return
     o.state.mousedown = false

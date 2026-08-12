@@ -6,6 +6,7 @@ import { UP, DOWN, LEFT, RIGHT, FLATUP, FLATDOWN, COMPUTED_HEAD_FIELDS } from '.
 import { NodeAttributes } from './attributes'
 import { NodeRef } from './noderef'
 import { escapeXml } from './util'
+import { claim, drop, place } from './caret'
 import {
   childNodes,
   childOl,
@@ -97,29 +98,20 @@ export class Op {
     return this.root.classList.contains('textMode')
   }
 
+  /** Put the caret in the cursor headline's text -- the outline's text-mode
+   *  half of "take the caret back" (`Outliner.pasteBinFocus()` is the other).
+   *  No title-row guard here any more: `place()` refuses whenever a different
+   *  owner holds the caret, which is that guard generalized, and the version
+   *  that cannot be forgotten on one of the two branches. */
   focusCursor(): void {
-    // Never pull focus out of the title row (prefs.titleRow). It sits
-    // outside `root` and owns its own editing session, and this is one of
-    // the two ways the outline reclaims focus — `Outliner.pasteBinFocus()`
-    // is the other, guarded the same way.
-    //
-    // Both need it, and guarding only one is what caused a bug worth
-    // remembering: `resumeListening()` and `setFocusRoot()` each pick
-    // between these two by `inTextMode()`, so with only pasteBinFocus()
-    // guarded the row stayed clickable while the outline was idle and became
-    // completely unclickable once it was editing a headline — the state a
-    // hoist leaves it in. Guarding the two primitives covers every caller;
-    // guarding callers one at a time did not.
-    if (typeof document !== 'undefined') {
-      const active = document.activeElement
-      if (active && active.closest('.concord-title-row')) return
-    }
-    textOf(this.getCursor() ?? this.root)?.focus()
+    const text = textOf(this.getCursor() ?? this.root)
+    if (text) place(text)
   }
 
   blurCursor(): void {
     const c = this.getCursor()
-    if (c) textOf(c)?.blur()
+    const text = c ? textOf(c) : null
+    if (text) drop(text)
   }
 
   setCursor(node: HTMLLIElement, multiple?: boolean, multipleRange?: boolean): void {
@@ -555,12 +547,28 @@ export class Op {
     if (this.inTextMode()) {
       document.execCommand(command)
     } else {
-      this.focusCursor()
-      document.execCommand('selectAll')
-      document.execCommand(command)
-      document.execCommand('unselect')
-      this.blurCursor()
-      this.o.pasteBinFocus()
+      // Formatting outside text mode has to borrow the caret: execCommand acts
+      // on the document selection, so the headline must be focused and fully
+      // selected for the duration, then handed back. Claiming says that out
+      // loud instead of leaving this as the one place that moves the caret on
+      // its own authority -- and it buys two things. During the dance the
+      // outline is the owner, so focusCursor() is allowed even if the caret was
+      // in a field a moment ago (formatting a selection while some app's field
+      // has focus would otherwise have selected and boldened *that* field's
+      // contents). And the release puts the caret back the way the previous
+      // owner wants it, which for the idle outline is the pasteBin -- the
+      // trailing pasteBinFocus() this used to spell out, but correct too when
+      // the caret came from somewhere else entirely.
+      const release = claim({ kind: 'outline', root: this.root })
+      try {
+        this.focusCursor()
+        document.execCommand('selectAll')
+        document.execCommand(command)
+        document.execCommand('unselect')
+        this.blurCursor()
+      } finally {
+        release()
+      }
     }
     this.markChanged()
   }
