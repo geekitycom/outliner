@@ -174,20 +174,29 @@ fn windows_snapshot(app: &tauri::AppHandle) -> flow::Windows {
 /// decision this app makes goes through this one function, and none of them
 /// is made *in* it — there is no policy below this line, only effects.
 ///
-/// The lock on `PendingFlow` is taken for the assignment and released before
+/// The lock on `PendingFlow` is taken for the decision and released before
 /// any step runs. A step re-entering this function while that lock was held
 /// would deadlock the app on its own quit — and `Step::Exit` does exactly
 /// that kind of re-entering, via `RunEvent::ExitRequested`.
+///
+/// The one place both locks are held at once is the `windows_snapshot` call
+/// inside that block, which takes `DirtyWindows` while holding
+/// `PendingFlow`. Nothing anywhere takes them in the other order — every
+/// other reader of the dirty map (`set_dirty`, the `Destroyed` cleanup, the
+/// `ExitRequested` check, and the step arms below) touches only that one —
+/// so the ordering can't invert into a deadlock. Keep it that way.
 fn run_flow(app: &tauri::AppHandle, input: flow::Input) {
-  let outcome = {
+  let steps = {
     let pending = app.state::<PendingFlow>();
     let mut guard = pending.0.lock().unwrap();
     let outcome = flow::advance(guard.as_ref(), input, &windows_snapshot(app));
+    // Assigned verbatim: which flow is pending afterwards is the machine's
+    // answer, on every path, including "the same one as before".
     *guard = outcome.pending;
     outcome.steps
   };
 
-  for step in outcome {
+  for step in steps {
     match step {
       flow::Step::Forget { label } => {
         app.state::<DirtyWindows>().0.lock().unwrap().remove(&label);
