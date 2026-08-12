@@ -55,7 +55,7 @@ operations. See `apps/desktop/README.md` for what it does and its design notes.
 
 ```bash
 pnpm dev:desktop                                    # run it (opens a native window)
-pnpm --filter outliner-desktop tauri build           # bundle a distributable .app / .dmg / etc.
+pnpm dist:desktop                                   # bundle a distributable .app / .dmg / etc.
 ```
 
 Building and bundling the app requires the [Rust toolchain](https://rustup.rs) (plus the

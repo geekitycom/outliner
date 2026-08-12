@@ -11,6 +11,7 @@
     "dev": "pnpm --filter @andrewshell/outliner dev",
     "dev:desktop": "pnpm --filter outliner-desktop tauri dev",
     "app:desktop": "pnpm --filter outliner-desktop app",
+    "dist:desktop": "pnpm --filter outliner-desktop tauri build",
     "build": "pnpm -r build",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

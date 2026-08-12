@@ -36,9 +36,40 @@ From the repo root:
 
 ```bash
 pnpm dev:desktop                                    # run it with HMR (no app icon — see below)
-pnpm app:desktop                                    # build + launch a real .app bundle
-pnpm --filter outliner-desktop tauri build           # bundle a distributable .app / .dmg / etc.
+pnpm app:desktop                                    # debug build + launch a real .app bundle
+pnpm dist:desktop                                   # release build: .app + .dmg, for installing
 ```
+
+The three are different builds, not three ways to run the same one. `dev:desktop`
+compiles a bare executable and hot-reloads the frontend. `app:desktop` is a
+**debug** bundle — a real `.app`, built in seconds because it reuses the warm
+`target/debug` artifacts, which is what makes it the right tool for checking icon
+and Dock behavior. `dist:desktop` is the **release** bundle: optimized, several
+minutes on a cold `target/release`, and the only one worth installing or handing to
+anyone.
+
+To install the release build:
+
+```bash
+cp -R apps/desktop/src-tauri/target/release/bundle/macos/GeekityFlow.app /Applications/
+```
+
+Deliberately a documented copy rather than an `install:desktop` script: where an
+app belongs is the machine's business, not the repo's, and a script that writes
+into `/Applications` would be the one command here with a side effect outside the
+working tree.
+
+**The bundle is unsigned** (`bundle.macOS` sets no `signingIdentity`). That is fine
+for a locally built app — nothing downloads it, so it never picks up a quarantine
+attribute and it launches normally. Hand someone the `.dmg`, though, and Gatekeeper
+will refuse it on their machine; real distribution needs a Developer ID and
+notarization.
+
+**The bundle version is pinned at `0.1.0`** in `src-tauri/tauri.conf.json` and does
+not track the library. release-please only manages `packages/outliner` (apps are
+private and outside that flow), so the library reaching 0.2.0 leaves the app's DMG
+filename and About box reading 0.1.0. Bump it by hand when the app itself is worth
+versioning.
 
 ### Why `pnpm dev:desktop` shows a generic Dock icon
 
