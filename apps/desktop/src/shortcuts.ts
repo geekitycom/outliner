@@ -19,6 +19,7 @@
 // the dialog so arrow keys and Cmd-B don't leak through to the outline sitting
 // behind it.
 import { CONCORD_KEYSTROKES } from '@andrewshell/outliner'
+import { MENU_ITEMS, MENU_SUBMENUS } from './menu'
 import { showModal } from './modal'
 
 interface Shortcut {
@@ -202,7 +203,68 @@ function libraryGroups(): ShortcutGroup[] {
 }
 
 /**
- * Every group the sheet shows, in order.
+ * Display tokens for the modifier names a Tauri accelerator uses.
+ * "CmdOrCtrl" is the same idea as the library's 'meta-' prefix and as this
+ * sheet's 'Cmd' token — Command on macOS, Control everywhere else — and
+ * formatKeys() below is the one place that choice is actually made.
+ */
+const ACCELERATOR_MODIFIERS: Record<string, string> = {
+  CmdOrCtrl: 'Cmd',
+  Cmd: 'Cmd',
+  Command: 'Cmd',
+  Ctrl: 'Cmd',
+  Control: 'Cmd',
+  Shift: 'Shift',
+  Alt: 'Alt',
+  Option: 'Alt',
+}
+
+/**
+ * Turns a menu accelerator ("CmdOrCtrl+Shift+S") into display tokens.
+ *
+ * Splitting on '+' would mangle an accelerator whose *key* is '+', which no
+ * item in the manifest has; if one ever does, this is where it breaks and the
+ * characterisation test for that row is what would say so.
+ */
+function acceleratorTokens(accelerator: string): string[] {
+  return accelerator.split('+').map((token) => ACCELERATOR_MODIFIERS[token] ?? token)
+}
+
+/**
+ * The app's own groups: one per submenu in ../menu.json that has at least one
+ * item with an accelerator, in menu-bar order, described by the manifest.
+ *
+ * `claimed` is every keystroke the library rows above already document, and
+ * an item whose accelerator is in it is skipped. That drops the whole Reorg
+ * menu, which is the intended outcome rather than a coincidence: every Reorg
+ * accelerator deliberately shadows a library keystroke with a call to the
+ * identical Outliner method (design note 9 in README.md), so those rows are
+ * already on the sheet under the library's own groups. Listing them again
+ * under "Reorg" would show one keystroke twice with two descriptions and
+ * imply the app had bound something new. ⌘F survives the filter because the
+ * library's `find` case is a no-op the sheet deliberately doesn't document —
+ * see UNDOCUMENTED_COMMANDS — so nothing has claimed it.
+ */
+function appGroups(claimed: Set<string>): ShortcutGroup[] {
+  return MENU_SUBMENUS.map((submenu) => ({
+    title: submenu.title,
+    shortcuts: MENU_ITEMS.filter((item) => item.submenu === submenu.key)
+      // Menu-only items (no accelerator) drop out here: the sheet is about
+      // keystrokes, and an item you can only reach by opening the menu has
+      // none to show.
+      .flatMap((item) =>
+        item.accelerator
+          ? [{ keys: acceleratorTokens(item.accelerator), description: item.description }]
+          : [],
+      )
+      .filter((shortcut) => !claimed.has(shortcut.keys.join('+'))),
+  })).filter((group) => group.shortcuts.length > 0)
+}
+
+/**
+ * Every group the sheet shows, in order: the library's keystrokes first,
+ * grouped by what they do, then the app's own accelerators, grouped by the
+ * menu they live in.
  *
  * A function rather than a module-level constant so that the lookups it does
  * happen when the sheet is opened, not when this module is imported: a
@@ -210,18 +272,11 @@ function libraryGroups(): ShortcutGroup[] {
  * tests open, rather than fail the import and take the whole window with it.
  */
 function shortcutGroups(): ShortcutGroup[] {
-  return [
-    ...libraryGroups(),
-    {
-      title: 'File',
-      shortcuts: [
-        { keys: ['Cmd', 'N'], description: 'New document' },
-        { keys: ['Cmd', 'O'], description: 'Open…' },
-        { keys: ['Cmd', 'S'], description: 'Save' },
-        { keys: ['Cmd', 'Shift', 'S'], description: 'Save As…' },
-      ],
-    },
-  ]
+  const library = libraryGroups()
+  const claimed = new Set(
+    library.flatMap((group) => group.shortcuts.map((shortcut) => shortcut.keys.join('+'))),
+  )
+  return [...library, ...appGroups(claimed)]
 }
 
 // navigator.userAgent, not a plugin: pulling in @tauri-apps/plugin-os just

@@ -4,31 +4,28 @@ import { showShortcuts, DOCUMENTED_COMMANDS, UNDOCUMENTED_COMMANDS } from '../sr
 
 // Characterisation tests for the Help > Keyboard Shortcuts sheet.
 //
-// These pin what the sheet renders TODAY, key by key and word for word. That
-// is deliberate and it is the whole point of the file: src/shortcuts.ts
-// currently hand-transcribes its content from two sources of truth (the
-// keystroke table in packages/outliner/src/util.ts and the accelerators in
-// src-tauri/src/lib.rs), and the plan is to rewrite it to derive the rows from
-// those sources instead of copying them. A rewrite like that is only safe if
-// something independent knows what the user used to see -- so the expected
-// values below are written out as literals rather than read back out of
-// SHORTCUT_GROUPS, which would make the tests agree with the code by
-// construction and catch nothing.
+// These pin what the sheet renders, key by key and word for word. The expected
+// values are written out as literals rather than read back out of the sheet's
+// own tables, which would make the tests agree with the code by construction
+// and catch nothing.
 //
 // Consequence worth stating plainly: these tests are EXPECTED to fail when the
 // sheet's content changes. A failure here is not automatically a bug -- it is
 // the sheet's content changing, and the failure is the prompt to confirm the
 // change was intended and re-pin it.
 //
-// They pin the drift, too. The transcription has fallen behind the sources in
-// several places -- Cmd-F and Cmd-G (Find, Find again), Cmd-Shift-N (New
-// Window), Cmd-W (Close Tab), Cmd-Shift-W (Close Window) and Cmd-Q (Quit) are
-// all bound but absent from the sheet, and Cmd-, is filed under the app's own
-// group when it is really a library keystroke (toggle-expand). None of that is
-// corrected here. Pinning the current output including its mistakes is what
-// makes the rewrite legible: the diff to these expectations then shows exactly
-// which user-visible changes are the drift being fixed, instead of hiding them
-// among rows that were already right.
+// They were written against a sheet that hand-transcribed its content from two
+// sources of truth (the keystroke table in packages/outliner/src/util.ts and
+// the menu accelerators in src-tauri/src/lib.rs), pinning that output
+// including the places it had fallen behind: Cmd-F and Cmd-G (Find, Find
+// again), Cmd-Shift-N (New Window), Cmd-W (Close Tab), Cmd-Shift-W (Close
+// Window) and Cmd-Q (Quit) were all bound but absent, and Cmd-, was filed
+// under the app's own group though it is a library keystroke (toggle-expand).
+// The sheet now derives its rows from those two sources -- CONCORD_KEYSTROKES
+// and ../menu.json -- and every one of those omissions is corrected. The
+// assertions that changed to say so are each marked CHANGED with the reason,
+// which is what the pinning was for: the rows that were already right came
+// through untouched, so the diff is exactly the drift and nothing else.
 
 // The sheet renders its keystrokes one way on macOS (⌘⇧S) and another way
 // everywhere else (Ctrl+Shift+S), choosing between them by matching /Mac/
@@ -115,7 +112,9 @@ describe('the keyboard shortcuts sheet', () => {
       'Formatting',
       'Expanding',
       'Clipboard',
+      'GeekityFlow',
       'File',
+      'Outliner',
     ])
   })
 
@@ -239,27 +238,63 @@ describe('the keyboard shortcuts sheet', () => {
   it('lists the document commands under File', async () => {
     const content = await renderShortcutsSheet()
 
-    // Four rows, where the File menu itself builds eight items with
-    // accelerators: New Window (⌘⇧N), Close Tab (⌘W), Close Window (⌘⇧W) and
-    // Quit (⌘Q) are all bound and none of them appear here. Pinned as-is; see
-    // the note at the top of this file.
+    // CHANGED, deliberately: three rows added. The File menu binds seven
+    // accelerators and the sheet showed four of them — New Window, Close Tab
+    // and Close Window were bound, worked, and went undocumented. They are
+    // now read from the same manifest the menu is built from, which is also
+    // why the rows follow the File menu's own order rather than the order
+    // someone happened to type them in.
     expect(rowsOfGroup(content, 'File')).toEqual([
       ['⌘N', 'New document'],
       ['⌘O', 'Open…'],
+      ['⌘⇧N', 'New window, in a tab group of its own'],
+      ['⌘W', 'Close this tab'],
+      ['⌘⇧W', 'Close every tab in this window'],
       ['⌘S', 'Save'],
       ['⌘⇧S', 'Save As…'],
     ])
   })
 
-  it('omits Find and Find again entirely', async () => {
+  it('lists Quit under the app menu it actually belongs to', async () => {
     const content = await renderShortcutsSheet()
 
-    // ⌘F and ⌘G are bound by the Outliner menu (src-tauri/src/lib.rs) and ⌘F
-    // is in the library's keystroke table as well, but the sheet has never
-    // mentioned either. Asserted rather than left implied, so that the
-    // rewrite which adds them has to come past this line and say so.
-    expect(content.textContent).not.toContain('Find')
-    expect(groupTitles(content)).not.toContain('Outliner')
+    // CHANGED, deliberately: ⌘Q was bound and undocumented. The group named
+    // for the app now holds what the app menu really binds — Quit — rather
+    // than a library keystroke misfiled under it (see Expanding above).
+    expect(rowsOfGroup(content, 'GeekityFlow')).toEqual([
+      ['⌘Q', 'Quit, prompting for every document with unsaved changes'],
+    ])
+  })
+
+  it('lists Find and Find again under Outliner', async () => {
+    const content = await renderShortcutsSheet()
+
+    // CHANGED, deliberately, and this assertion is the inverse of the one it
+    // replaces ("omits Find and Find again entirely"). Both are bound by the
+    // Outliner menu, both work, and neither was mentioned anywhere on the
+    // sheet. ⌘F is in the library's table too, mapped to a case that does
+    // nothing — so the app's implementation is the only one there is, and its
+    // description is the honest one to show.
+    expect(rowsOfGroup(content, 'Outliner')).toEqual([
+      ['⌘F', 'Find…'],
+      ['⌘G', 'Find again — repeat the last search'],
+    ])
+  })
+
+  it('does not repeat a keystroke the library rows already cover', async () => {
+    const content = await renderShortcutsSheet()
+
+    // Every accelerator in the Reorg menu deliberately shadows a library
+    // keystroke with a call to the identical method (design note 9), so all
+    // ten of its items are already documented by the Reorganizing,
+    // Formatting and Editing groups. Listing them a second time under "Reorg"
+    // would be the same shortcut twice with two descriptions.
+    expect(groupTitles(content)).not.toContain('Reorg')
+
+    const keystrokes = [...content.querySelectorAll('.shortcut-keys')].map((cell) => cell.textContent)
+    expect(keystrokes.filter((keys) => keys === '⌘U')).toHaveLength(1)
+    expect(keystrokes.filter((keys) => keys === '⌘\\')).toHaveLength(1)
+    expect(new Set(keystrokes).size).toBe(keystrokes.length)
   })
 })
 
@@ -271,9 +306,15 @@ describe('the keyboard shortcuts sheet away from macOS', () => {
   it('spells the modifiers out and joins them with +', async () => {
     const content = await renderShortcutsSheet()
 
+    // Same three added rows as the macOS File test above; the point being
+    // asserted here is unchanged — that a "CmdOrCtrl+Shift+N" accelerator
+    // renders as Ctrl+Shift+N away from macOS.
     expect(rowsOfGroup(content, 'File')).toEqual([
       ['Ctrl+N', 'New document'],
       ['Ctrl+O', 'Open…'],
+      ['Ctrl+Shift+N', 'New window, in a tab group of its own'],
+      ['Ctrl+W', 'Close this tab'],
+      ['Ctrl+Shift+W', 'Close every tab in this window'],
       ['Ctrl+S', 'Save'],
       ['Ctrl+Shift+S', 'Save As…'],
     ])
