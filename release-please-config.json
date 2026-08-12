@@ -4,7 +4,6 @@
     "packages/outliner": {
       "release-type": "node",
       "package-name": "@andrewshell/outliner",
-      "component": "outliner",
       "include-component-in-tag": false,
       "bump-minor-pre-major": true,
       "extra-files": [
